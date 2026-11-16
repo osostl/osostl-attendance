@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn() && request.auth.token.email in ['admin@asas.local', 'academic@asas.local'];
+    }
+    // the trainer who owns this group
+    function ownsGroup(groupId, trainerId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/groups/$(groupId)).data.trainerId == trainerId
+        && get(/databases/$(database)/documents/trainers/$(trainerId)).data.uid == request.auth.uid;
+    }
+
+    // names shown on the trainer login screen (no codes, no students)
+    match /public/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /trainers/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /groups/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    // trainer codes: academic affairs only
+    match /secrets/{id} {
+      allow read, write: if isAdmin();
+    }
+    // attendance: one document per group per day, id = groupId_date
+    match /att/{id} {
+      allow read: if signedIn();
+      allow delete: if isAdmin();
+      allow create, update: if isAdmin() || (
+        id == request.resource.data.groupId + '_' + request.resource.data.date
+        && ownsGroup(request.resource.data.groupId, request.resource.data.trainerId)
+      );
+    }
+  }
+}
