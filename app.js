@@ -4,8 +4,8 @@ import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, delete
 import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
-const DOMAIN = "asas.local";                       // login emails are internal, never mailed
-const ROLE_EMAIL = {admin: "admin@" + DOMAIN, academic: "academic@" + DOMAIN};
+const DOMAIN = "osostl.local";                       // login emails are internal, never mailed
+const ROLE_EMAIL = {admin: "admin@" + DOMAIN, acadmic: "academic@" + DOMAIN};
 const ROLES = {admin: "الإدارة", academic: "مسؤول الشؤون الأكاديمية"};
 const STATUS = {p: "حاضر", l: "متأخر", a: "غائب", e: "مستأذن"};
 const GENDER = {m: "طالب", f: "طالبة"};
