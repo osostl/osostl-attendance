@@ -5,7 +5,7 @@ import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
 const DOMAIN = "osostl.local";                       // login emails are internal, never mailed
-const ROLE_EMAIL = {admin: "admin@" + DOMAIN, acadmic: "academic@" + DOMAIN};
+const ROLE_EMAIL = {admin: "admin@" + DOMAIN, acadmic: "acadmic@" + DOMAIN};
 const ROLES = {admin: "الإدارة", academic: "مسؤول الشؤون الأكاديمية"};
 const STATUS = {p: "حاضر", l: "متأخر", a: "غائب", e: "مستأذن"};
 const GENDER = {m: "طالب", f: "طالبة"};
