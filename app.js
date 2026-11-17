@@ -28,6 +28,11 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const digits = s => String(s || "").trim().replace(/[٠-٩]/g, d => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)));
 const norm = s => String(s || "").trim().replace(/\s+/g, " ").replace(/[أإآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه").replace(/ـ/g, "").replace(/عبد ال/g, "عبدال");
 const letter = m => m >= 90 ? "ممتاز" : m >= 80 ? "جيد جداً" : m >= 70 ? "جيد" : m >= PASS ? "مقبول" : "راسب";
+const validLink = u => /^https:\/\/\S+$/i.test(String(u || "").trim());
+const isTeams = u => /teams\.(microsoft|live)\.com/i.test(String(u || ""));
+const meetLabel = u => isTeams(u) ? "على Teams" : "";
+const addMin = (hm, m) => { const [h, mm] = hm.split(":").map(Number); const t = Math.max(0, h * 60 + mm + m); return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"); };
+const todayDay = () => ({Sun: "الأحد", Mon: "الاثنين", Tue: "الثلاثاء", Wed: "الأربعاء", Thu: "الخميس"})[new Date().toLocaleDateString("en-US", {timeZone: "Asia/Riyadh", weekday: "short"})] || "";
 function toast(msg){ const t = $("#toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("on"), 3000); }
 
 /* ---------- firebase ---------- */
@@ -157,7 +162,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && !!a.closest("#roll, #gradesBox, #ab");
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab"));
 }
 
 /* ---------- top bar ---------- */
@@ -292,7 +297,9 @@ function renderStudent(app){
     const docs = S.myAtt.filter(d => d.groupId === g.id);
     let pres = 0; docs.forEach(d => { const r = entry && d.rec && d.rec[entry.id]; if (r && (r.st === "p" || r.st === "l")) pres++; });
     const rate = docs.length ? Math.round(pres / docs.length * 100) : null;
-    return {g, rate, sessions: docs.length, pres, r: res[g.id]};
+    const d = todayDay(), now = nowHM();
+    const live = sessionsFor(g, st.gender).find(x => x.day === d && addMin(x.from, -15) <= now && now <= x.to);
+    return {g, rate, sessions: docs.length, pres, r: res[g.id], live};
   });
   const rated = cards.filter(c => c.rate !== null);
   const avgAtt = rated.length ? Math.round(rated.reduce((a,c) => a + c.rate, 0) / rated.length) : null;
@@ -318,6 +325,8 @@ function renderStudent(app){
           <div class="muted">${esc(tName(c.g.trainerId))}${c.g.mode ? " · " + esc(c.g.mode) : ""}</div>
           <div class="muted" style="margin-top:4px">الحضور: ${c.rate === null ? "ما بدأ التحضير" : `${c.pres} من ${c.sessions} محاضرة (${c.rate}%)`}</div>
           ${c.rate === null ? "" : `<span class="bar" style="display:block;margin-top:6px;max-width:220px"><i style="width:${c.rate}%"></i></span>`}
+          ${(c.g.recordings || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${c.g.recordings.length})</summary><div class="list" style="margin-top:6px">${c.g.recordings.filter(r => validLink(r.url)).map(r => `<a class="item" style="padding:8px 10px;text-decoration:none;color:inherit" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="grow">${esc(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></a>`).join("")}</div></details>` : ""}
+          ${c.g.meetLink ? `<div style="margin-top:10px"><button class="btn sm ${c.live ? "gold" : ""}" data-join="${esc(c.g.id)}">${c.live ? "الآن · " : ""}دخول المحاضرة ${meetLabel(c.g.meetLink)}</button>${c.live ? ` <span class="muted">${fmtTime(c.live.from)} – ${fmtTime(c.live.to)}</span>` : ""}</div>` : ""}
         </div>
         <div style="text-align:center;min-width:92px">
           ${c.r ? `<div style="font-size:26px;font-weight:700;color:var(--green)">${c.r.mark}</div><span class="pill ${c.r.mark >= PASS ? "p" : "a"}">${letter(c.r.mark)}</span>` : `<span class="pill">لم تُعتمد بعد</span>`}
@@ -325,6 +334,15 @@ function renderStudent(app){
       </div>`).join("") || `<div class="empty">ما فيه مقررات مسجلة لك بعد.</div>`}</div>
   </div>
   <div class="card"><h2>جدولي الأسبوعي</h2>${weekTable(rows)}</div>`;
+  app.querySelectorAll("[data-join]").forEach(b => b.onclick = () => {
+    const g = S.groups[b.dataset.join]; if (!g || !validLink(g.meetLink)) return toast("رابط المحاضرة غير صالح، تواصل مع المدرب");
+    window.open(g.meetLink.trim(), "_blank", "noopener");
+    const date = today(), id = `${g.id}_${date}_${S.myNum}`;
+    if (S._joined && S._joined[id]) return;
+    S._joined = {...(S._joined || {}), [id]: 1};
+    setDoc(ref("joins/" + id), {groupId: g.id, date, num: S.myNum, time: nowHM(), at: new Date().toISOString()})
+      .then(() => toast("انسجل دخولك للمحاضرة")).catch(() => {});
+  });
 }
 
 /* ---------- trainer portal ---------- */
@@ -343,8 +361,13 @@ function startAtt(){
   S.unsubGroupAtt = onSnapshot(query(collection(db, "att"), where("groupId", "==", S.tGroup)), snap => {
     S.groupAtt = snap.docs.map(d => d.data()); if (S.tTab === "hist") render();
   }, () => {});
+  S.joins = {};
+  S.unsubJoins = onSnapshot(query(collection(db, "joins"), where("groupId", "==", S.tGroup), where("date", "==", S.tDate)), snap => {
+    S.joins = {}; snap.docs.forEach(d => { const j = d.data(); S.joins[j.num] = j.time; });
+    if (S.tTab === "roll" && !busyEditing()) render();
+  }, () => {});
 }
-function stopAtt(){ if (S.unsubAtt) S.unsubAtt(); if (S.unsubGroupAtt) S.unsubGroupAtt(); S.unsubAtt = S.unsubGroupAtt = null; S.att = null; S.groupAtt = []; }
+function stopAtt(){ if (S.unsubAtt) S.unsubAtt(); if (S.unsubGroupAtt) S.unsubGroupAtt(); if (S.unsubJoins) S.unsubJoins(); S.unsubAtt = S.unsubGroupAtt = S.unsubJoins = null; S.att = null; S.groupAtt = []; S.joins = {}; }
 function attData(){
   const g = S.groups[S.tGroup];
   return S.att ? clone(S.att) : {groupId: g.id, trainerId: g.trainerId || "", course: g.course, date: S.tDate, rec: {}};
@@ -389,6 +412,20 @@ function renderTrainer(app){
   <div class="card">
     <div class="row"><button class="btn sm" id="back">→ المقررات</button><span class="pill">${esc(g.mode || "—")}</span></div>
     <h2 style="margin-top:10px">${esc(g.course)}</h2>
+    <div class="row" style="margin-bottom:10px">
+      <input type="url" id="mlink" class="grow" dir="ltr" placeholder="رابط اجتماع Teams للمقرر" value="${esc(g.meetLink || "")}">
+      <button class="btn sm" id="mlSave">حفظ الرابط</button>
+      ${validLink(g.meetLink) ? `<a class="btn sm pri" href="${esc(g.meetLink.trim())}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
+    </div>
+    <details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${(g.recordings || []).length})</summary>
+      <div class="list" style="margin-top:8px">${(g.recordings || []).map((r, i) => `<div class="item" style="padding:8px 10px"><span class="grow">${esc(r.date)} · ${esc(r.title)}</span><a class="btn sm" href="${esc(validLink(r.url) ? r.url : "#")}" target="_blank" rel="noopener">فتح</a><button class="btn sm danger" data-rrec="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه تسجيلات</span>`}</div>
+      <div class="row" style="margin-top:8px">
+        <input type="date" id="recD" value="${today()}" style="width:150px">
+        <input type="text" id="recT" class="grow" placeholder="عنوان المحاضرة">
+        <input type="url" id="recU" class="grow" dir="ltr" placeholder="رابط التسجيل (OneDrive / Stream / YouTube)">
+        <button class="btn sm pri" id="recAdd">+ إضافة</button>
+      </div>
+    </details>
     <div class="row">
       ${S.tTab === "roll" ? `<label class="f" for="d" style="min-width:170px">تاريخ المحاضرة<input type="date" id="d" value="${esc(S.tDate)}" max="${today()}"></label>` : ""}
       <div class="tabs" style="border:0;padding:0;margin-inline-start:auto">
@@ -413,6 +450,7 @@ function renderTrainer(app){
         <button class="btn pri sm" id="allP">تحضير الباقي حاضر الآن</button>
         <button class="btn sm" id="allOut">انصراف الحاضرين الآن</button>
         <button class="btn sm" id="allA">الباقي غائب</button>
+        ${Object.keys(S.joins || {}).length ? `<button class="btn gold sm" id="allJ">تحضير اللي دخلوا Teams (${st.filter(s => s.sid && S.joins[s.sid]).length})</button>` : ""}
       </div>
     </div></div>
     <div class="list" id="roll">${st.length ? st.map((s,i) => stuRow(s,i,rec[s.id]||{})).join("") : `<div class="card empty">ما فيه طلاب في هذا المقرر بعد.</div>`}</div>`;
@@ -420,6 +458,22 @@ function renderTrainer(app){
   else body = gradesEditor(g, "trainer");
   app.innerHTML = head + body;
   $("#back").onclick = () => { S.tGroup = null; stopAtt(); render(); };
+  const saveRecs = async list => {
+    try { await setDoc(ref("groups/" + g.id), {recordings: list}, {merge: true}); S.groups[g.id].recordings = list; render(); return true; }
+    catch (e) { handleWriteErr(e); return false; }
+  };
+  $("#recAdd").onclick = async () => {
+    const r = {date: $("#recD").value || today(), title: $("#recT").value.trim() || "محاضرة", url: $("#recU").value.trim()};
+    if (!validLink(r.url)) return toast("رابط التسجيل لازم يبدأ بـ https://");
+    if (await saveRecs([...(g.recordings || []), r].sort((a, b) => b.date.localeCompare(a.date)))) toast("انضاف التسجيل، والطلاب يشوفونه الحين");
+  };
+  document.querySelectorAll("[data-rrec]").forEach(b => b.onclick = () => { const l = [...(g.recordings || [])]; l.splice(Number(b.dataset.rrec), 1); saveRecs(l); });
+  $("#mlSave").onclick = async () => {
+    const v = $("#mlink").value.trim();
+    if (v && !validLink(v)) return toast("الرابط لازم يبدأ بـ https://");
+    try { await setDoc(ref("groups/" + g.id), {meetLink: v}, {merge: true}); S.groups[g.id].meetLink = v; toast(v ? "انحفظ رابط المحاضرة، والطلاب يشوفونه الحين" : "انشال الرابط"); render(); }
+    catch (e) { handleWriteErr(e); }
+  };
   if ($("#d")) $("#d").onchange = e => { if (e.target.value) { S.tDate = e.target.value; startAtt(); render(); } };
   app.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { S.tTab = b.dataset.tab; render(); });
   if (S.tTab === "roll") bindRoll(st, rec);
@@ -430,7 +484,7 @@ function stuRow(s, i, r){
   const stc = r.st || "";
   return `<div class="stu ${stc}" data-s="${esc(s.id)}">
     <span class="num">${i+1}</span>
-    <span class="nm">${esc(s.name)} <span class="pill ${s.gender}">${GENDER[s.gender]||""}</span></span>
+    <span class="nm">${esc(s.name)} <span class="pill ${s.gender}">${GENDER[s.gender]||""}</span>${s.sid && S.joins && S.joins[s.sid] ? ` <span class="pill e">دخل Teams ${fmtTime(S.joins[s.sid])}</span>` : ""}</span>
     <div class="ctl">
       <div class="seg" role="group" aria-label="الحالة">${["p","l","a","e"].map(k => `<button class="${k} ${stc===k?"on":""}" data-st="${k}">${STATUS[k]}</button>`).join("")}</div>
       <div class="times">
@@ -463,6 +517,7 @@ function bindRoll(st, rec){
   $("#allP").onclick = () => bulk((s, R) => { if (!R[s.id] || !R[s.id].st) R[s.id] = {st: "p", in: nowHM()}; });
   $("#allOut").onclick = () => bulk((s, R) => { const r = R[s.id]; if (r && (r.st === "p" || r.st === "l") && !r.out) r.out = nowHM(); });
   $("#allA").onclick = () => bulk((s, R) => { if (!R[s.id] || !R[s.id].st) R[s.id] = {st: "a"}; });
+  if ($("#allJ")) $("#allJ").onclick = () => bulk((s, R) => { const t = s.sid && S.joins[s.sid]; if (t && (!R[s.id] || !R[s.id].st)) R[s.id] = {st: "p", in: t}; });
 }
 
 /* ---------- grades (trainer + admin) ---------- */
@@ -681,6 +736,7 @@ function openGroup(id){
       <label class="f grow" for="mc">المقرر<input type="text" id="mc" list="courses" value="${esc(g ? g.course : "")}"></label>
       <datalist id="courses">${courses.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
       <label class="f grow" for="mt2">المدرب/ة<select id="mt2">${trainerOptions(g ? g.trainerId : "")}</select></label>
+      <label class="f grow" for="mlk" style="min-width:220px">رابط Teams<input type="url" id="mlk" dir="ltr" value="${esc(g && g.meetLink || "")}" placeholder="https://teams.microsoft.com/..."></label>
       <label class="f" for="mm" style="min-width:130px">نمط الحضور<select id="mm"><option value="">—</option>${["حضوري","عن بعد"].map(m => `<option ${g && g.mode===m?"selected":""}>${m}</option>`).join("")}</select></label>
     </div>
     <div class="row"><button class="btn pri" id="msave">حفظ بيانات الشعبة</button>${g ? `<button class="btn danger" id="mdel">حذف الشعبة</button>` : ""}</div>
@@ -714,7 +770,7 @@ function openGroup(id){
   renderModalStudents();
   $("#mx").onclick = closeModal;
   const base = () => { const c = S.groups[S._modalGroup]; const d = c ? clone(c) : {course: "", trainerId: "", mode: "", students: [], sessions: []}; delete d.id; return d; };
-  const header = d => { d.course = $("#mc").value.trim(); d.trainerId = $("#mt2").value; d.mode = $("#mm").value; return d; };
+  const header = d => { d.course = $("#mc").value.trim(); d.trainerId = $("#mt2").value; d.mode = $("#mm").value; const l = $("#mlk").value.trim(); d.meetLink = validLink(l) ? l : ""; return d; };
   const write = d => { writeGroup(S._modalGroup, d); renderModalStudents(); };
   $("#msave").onclick = () => { if (!$("#mc").value.trim()) return toast("اكتب اسم المقرر"); write(header(base())); toast("تم الحفظ"); };
   $("#saddS").onclick = () => {
@@ -842,13 +898,19 @@ async function runStudentImport(){
     // 1) student accounts
     const pubSnap = await getDoc(ref("public/studentLogin"));
     const map = (pubSnap.exists() && pubSnap.data().map) || {};
-    let made = 0, i = 0;
+    let made = 0, i = 0, quotaHit = false;
     for (const s of data.students) {
       i++;
       byName[norm(s.name)] = s.num;
       if (S.students[s.num] && S.students[s.num].uid) continue;
+      if (quotaHit) continue;
       log(`(${i}/${data.students.length}) إنشاء حساب ${s.name} · ${s.num}`);
-      const acc = await createAccount("st-" + s.num, 0, s.code);
+      let acc;
+      try { acc = await createAccount("st-" + s.num, 0, s.code); }
+      catch (e) {
+        if (e && e.code === "auth/too-many-requests") { quotaHit = true; log("Firebase وقف إنشاء الحسابات مؤقتاً. بكمل ربط الطلاب الموجودين، وشغّل الاستيراد بعد ساعة عشان تنعمل الحسابات الباقية."); continue; }
+        throw e;
+      }
       map[s.num] = acc.ver;
       const b = writeBatch(db);
       b.set(ref("students/" + s.num), {num: s.num, name: s.name, gender: s.gender, ...acc});
@@ -857,7 +919,8 @@ async function runStudentImport(){
       await b.commit();
       S.students[s.num] = {num: s.num, name: s.name, gender: s.gender, ...acc}; made++;
     }
-    log(`الحسابات: انعمل ${made}، والموجود من قبل ${data.students.length - made}.`);
+    const left = data.students.filter(s => !(S.students[s.num] && S.students[s.num].uid)).length;
+    log(`الحسابات: انعمل ${made} الحين${left ? `، وباقي ${left} بدون حساب` : "، وكل الطلاب لهم حسابات"}.`);
     // 2) new groups
     for (const g of data.newGroups || []) {
       if (S.groups[g.id]) continue;
@@ -913,9 +976,11 @@ async function runStudentImport(){
     }
     if (fixed) log(`سجلات حضور سابقة تحدثت: ${fixed}.`);
     log(unmatched.size ? `أسماء ما انربطت برقم: ${[...unmatched].join("، ")}` : "تم. كل الطلاب مربوطين بأرقامهم.");
+    if (left) log(`باقي ${left} طالب بدون حساب دخول. شغّل الاستيراد مرة ثانية بعد ساعة.`);
     toast("اكتمل الاستيراد");
   } catch (e) { console.error(e); log("توقف: " + accountErr(e)); }
   S._busy = false; const b = $("#upB"); if (b) b.disabled = false;
+  const keep = $("#upLog") ? $("#upLog").textContent : ""; render(); if ($("#upLog")) $("#upLog").textContent = keep;
 }
 
 /* trainers tab */
