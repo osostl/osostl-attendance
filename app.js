@@ -202,6 +202,7 @@ function afterData(){
   render();
 }
 function busyEditing(){
+  if ([...document.querySelectorAll("#app input[type=file], #modalBox input[type=file]")].some(i => i.files && i.files.length)) return true;   // a picked image not sent yet
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
@@ -244,7 +245,7 @@ function renderAnn(){
 const trainerTitle = t => (t.gender === "f" ? "المدربة " : "المدرب ") + t.name;
 function renderTop(){
   const w = $("#topWho"), sub = $("#topSub");
-  const label = {trainer: "بوابة المدربين", admin: "بوابة الشؤون الأكاديمية", student: "بوابة الطلاب", trainerLogin: "بوابة المدربين", adminLogin: "بوابة الشؤون الأكاديمية", studentLogin: "بوابة الطلاب"}[S.view] || "بوابة الحضور والانصراف";
+  const label = {trainer: "بوابة المدربين", admin: "بوابة الشؤون المالية والأكاديمية", student: "بوابة الطلاب", trainerLogin: "بوابة المدربين", adminLogin: "بوابة الشؤون المالية والأكاديمية", studentLogin: "بوابة الطلاب"}[S.view] || "بوابة الحضور والانصراف";
   sub.textContent = label;
   if (S.authUser) {
     let who = "";
@@ -293,7 +294,7 @@ function renderHome(app){
   <div class="portals">
     <button class="portal t" id="goS"><b>بوابة الطلاب</b></button>
     <button class="portal t" id="goT"><b>بوابة المدربين</b></button>
-    <button class="portal" id="goA"><b>بوابة الشؤون الأكاديمية</b></button>
+    <button class="portal" id="goA"><b>بوابة الشؤون المالية والأكاديمية</b></button>
   </div>`;
   $("#goS").onclick = () => go("studentLogin");
   $("#goT").onclick = () => go("trainerLogin");
@@ -332,7 +333,7 @@ function renderTrainerLogin(app){
   };
 }
 function renderAdminLogin(app){
-  app.innerHTML = loginCard("دخول الشؤون الأكاديمية", `
+  app.innerHTML = loginCard("دخول الشؤون المالية والأكاديمية", `
     <label class="f" for="ar">الصفة<select id="ar">${Object.entries(ROLES).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
     <label class="f" for="ac">الرمز<input type="password" id="ac" inputmode="numeric" required></label>`);
   $("#lf").onsubmit = e => { e.preventDefault(); const email = ROLE_EMAIL[$("#ar").value], code = digits($("#ac").value); doLogin(() => signInWithEmailAndPassword(auth, email, code), "adminLogin"); };
@@ -890,7 +891,7 @@ const levelPill = st => `<span class="pill ${LEVEL_PILL[st.level]}">${LEVEL[st.l
 /* ================= printing, Excel export, certificates ================= */
 const SITE = () => location.href.split("#")[0].split("?")[0].replace(/[^/]*$/, "");
 const INST_AR = "معهد أسس التقنية والقانون العالي للتدريب", INST_EN = "OSOS Higher Institute of Technology & Law for Training";
-const hijri = d => { try { return new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-islamic-umalqura-nu-latn", {day: "numeric", month: "long", year: "numeric"}) + " هـ"; } catch { return ""; } };
+const hijri = d => { try { return new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-islamic-umalqura-nu-latn", {day: "numeric", month: "long", year: "numeric"}).replace(/\s*هـ\s*$/, "") + " هـ"; } catch { return ""; } };
 const greg = d => { try { return new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-gregory-nu-latn", {day: "numeric", month: "long", year: "numeric"}) + " م"; } catch { return d; } };
 const bothDates = d => `${hijri(d)} · ${greg(d)}`;
 /* open the window inside the click, fill it after any awaits (keeps popup blockers happy) */
@@ -924,9 +925,10 @@ th{background:#1F5136;color:#fff;font-weight:600}td.n{text-align:right}tr:nth-ch
 .cert .qr{position:absolute;bottom:20mm;left:22mm;text-align:center;font-size:9.5px;color:#555}.cert .qr svg{width:92px;height:92px}
 @media print{body{background:#fff}.bar{display:none}.page{margin:0;width:auto;min-height:auto}}
 `;
-function fillPrint(w, title, pages, land){
+const fillPrintFin = (w, title, pages, land) => fillPrint(w, title, pages, land, "المالية");
+function fillPrint(w, title, pages, land, dept){
   if (!w) return;
-  const head = `<header class="hd"><img src="${SITE()}logo-mark.png" alt=""><div class="t"><b>${INST_AR}</b><span>${INST_EN}</span></div><div class="meta">الشؤون الأكاديمية<br>${esc(bothDates(today()))}</div></header>`;
+  const head = `<header class="hd"><img src="${SITE()}logo-mark.png" alt=""><div class="t"><b>${INST_AR}</b><span>${INST_EN}</span></div><div class="meta">${esc(dept || "الشؤون الأكاديمية")}<br>${esc(bothDates(today()))}</div></header>`;
   w.document.open();
   w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${esc(title)}</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -2097,7 +2099,7 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts"];
 async function backupAll(note){
   const out = {kind: "asas-backup-v1", at: new Date().toISOString(), note: note || "", data: {}};
   for (const c of ALL_COLLS) {
@@ -2268,6 +2270,15 @@ function openFinAccount(num){
   const progs = S.finSet.programs || [];
   const draw = () => {
     const st = accStatus(acc, paysOf(num)), pays = paysOf(num).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    /* which payments covered which installment: payments fill the schedule in date order */
+    let pr = 0; const ranges = paysOf(num).filter(p => !p.void).sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.receiptNo || "").localeCompare(b.receiptNo || "")).map(p => { const r = {p, from: pr, to: pr + Number(p.amount)}; pr = r.to; return r; });
+    let ir = 0; const instRange = st.sched.map(i => { const r = {from: ir, to: ir + Number(i.amount)}; ir = r.to; return r; });
+    const instCell = (i, k) => {
+      const r = instRange[k], by = ranges.filter(x => x.from < r.to - 0.001 && x.to > r.from + 0.001).map(x => x.p);
+      const left = Math.max(0, Math.round((Number(i.amount) - i.covered) * 100) / 100);
+      return by.map(p => p.hasImg ? `<button class="btn sm" data-rview="payments:${esc(p.id)}" title="سند ${esc(p.receiptNo)}">إيصال ${esc(p.receiptNo.split("-")[1] || "")}</button>` : `<span class="muted" style="font-size:12px">سند ${esc(p.receiptNo)} بدون إيصال</span>`).join(" ")
+        + (left > 0 && (S.finAcc || {})[num] ? ` <button class="btn sm gold" data-payinst="${left}" data-instlbl="${esc(i.label || "القسط " + (k + 1))}">تسجيل الدفعة</button>` : "");
+    };
     $("#modalBox").innerHTML = `
     <div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">${esc(s.name)} · ${esc(num)}</h2><button class="btn sm" id="fx">إغلاق</button></div>
     <div class="stats"><div class="stat"><div class="n">${SAR(st.net)}</div><div class="l">الصافي</div></div><div class="stat"><div class="n">${SAR(st.paid)}</div><div class="l">مدفوع</div></div><div class="stat"><div class="n">${SAR(st.remaining)}</div><div class="l">متبقي</div></div><div class="stat"><div class="n" style="color:${st.overdue ? "var(--abs)" : "inherit"}">${SAR(st.overdue)}</div><div class="l">متأخر</div></div></div>
@@ -2290,8 +2301,8 @@ function openFinAccount(num){
         <label class="f grow" for="fPh">جوال للتذكير (الطالب أو ولي الأمر)<input type="tel" id="fPh" dir="ltr" value="${esc(acc.phone || "")}" placeholder="05xxxxxxxx"></label>
         <label class="f grow" for="fPar">سجّل عن طريق (للعمولة)<select id="fPar"><option value="">بدون شريك</option>${(S.finSet.partners || []).map(p => `<option value="${esc(p.id)}" ${acc.partner === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
       </div>
-      <div class="tbl" style="margin-top:10px"><table><thead><tr><th>الدفعة</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>
-        ${st.sched.map((i, k) => i.xi !== undefined ? `<tr><td>${esc(i.label)}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>` : `<tr><td>${k + 1}</td><td><input type="date" data-idue="${i.ix}" value="${esc(i.due)}" style="width:150px;padding:4px"></td><td><input type="number" data-iamt="${i.ix}" value="${i.amount}" style="width:110px;padding:4px"></td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>`).join("") || `<tr><td colspan="4" class="empty">اضغط "توليد الجدول"</td></tr>`}
+      <div class="tbl" style="margin-top:10px"><table><thead><tr><th>الدفعة</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th><th>الإيصال</th></tr></thead><tbody>
+        ${st.sched.map((i, k) => i.xi !== undefined ? `<tr><td>${esc(i.label)}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td><td>${instCell(i, k)}</td></tr>` : `<tr><td>${k + 1}</td><td><input type="date" data-idue="${i.ix}" value="${esc(i.due)}" style="width:150px;padding:4px"></td><td><input type="number" data-iamt="${i.ix}" value="${i.amount}" style="width:110px;padding:4px"></td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td><td>${instCell(i, k)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">اضغط "توليد الجدول"</td></tr>`}
       </tbody></table></div>
       <div class="row" style="margin-top:10px"><button class="btn pri" id="fSave">حفظ الحساب</button><span class="muted" id="fChk"></span></div>
     </div>
@@ -2308,11 +2319,11 @@ function openFinAccount(num){
         <label class="f" for="pD" style="width:160px">التاريخ<input type="date" id="pD" value="${today()}" max="${today()}"></label>
         <label class="f grow" for="pRef">رقم العملية / المرجع<input type="text" id="pRef"></label>
       </div>
-      <label class="f" for="pN" style="margin-top:8px">ملاحظة<input type="text" id="pN"></label>
+      <div class="row" style="margin-top:8px"><label class="f grow" for="pN">ملاحظة<input type="text" id="pN"></label><label class="f grow" for="pImg">صورة الإيصال (اختياري)<input type="file" id="pImg" accept="image/*"></label></div>
       <div class="row" style="margin-top:8px"><button class="btn gold" id="pAdd" ${(S.finAcc || {})[num] ? "" : "disabled"}>تسجيل الدفعة وطباعة السند</button>${(S.finAcc || {})[num] ? "" : `<span class="muted">احفظ الحساب أول</span>`}</div>
     </div>
     <div><h3>الدفعات (${pays.length})</h3><div class="list">${pays.map(p => `<div class="item" style="${p.void ? "opacity:.55" : ""}"><div class="grow"><div class="t">${SAR(p.amount)} · ${esc(p.method)}</div><div class="muted">سند ${esc(p.receiptNo)} · ${dH(p.date)}${p.ref ? " · " + esc(p.ref) : ""}${p.void ? " · ملغى: " + esc(p.voidReason || "") : ""}</div></div>
-      <button class="btn sm" data-prc="${esc(p.id)}">السند</button>${p.void ? "" : `<button class="btn sm danger" data-pv="${esc(p.id)}">إلغاء</button>`}</div>`).join("") || `<span class="muted">ما فيه دفعات</span>`}</div></div>
+      ${rcptBtns("payments", p)}<button class="btn sm" data-prc="${esc(p.id)}">السند</button>${p.void ? "" : `<button class="btn sm danger" data-pv="${esc(p.id)}">إلغاء</button>`}</div>`).join("") || `<span class="muted">ما فيه دفعات</span>`}</div></div>
     <div class="row"><button class="btn sm" id="fStmt">كشف حساب PDF</button>${acc.phone ? `<a class="btn sm gold" target="_blank" rel="noopener" href="https://wa.me/${normPhone(acc.phone)}?text=${encodeURIComponent(finReminder(s, st))}">تذكير واتساب</a>` : ""}</div>`;
     $("#fx").onclick = () => { S._finModal = null; closeModal(); };
     const readForm = () => { acc.program = $("#fP").value; acc.fee = Number($("#fFee").value) || 0; acc.discount = Number($("#fDis").value) || 0; acc.discountNote = $("#fDisN").value.trim(); acc.plan = $("#fPl").value; acc.start = $("#fSt").value; acc.months = Number($("#fMo").value) || 4; acc.second = $("#fSec").value; acc.phone = $("#fPh").value.trim(); acc.partner = $("#fPar").value;
@@ -2340,21 +2351,29 @@ function openFinAccount(num){
       if (amount <= 0) return toast("اكتب المبلغ");
       if (amount > st.remaining + 0.01) return toast(`المبلغ أكبر من المتبقي (${SAR(st.remaining)})`);
       const w = openPrint(); if (!w) return;
+      let img = null; try { img = await pickedImg("#pImg"); } catch { w.close(); return toast("صورة الإيصال كبيرة، صوّرها بدقة أقل"); }
       const pay = {num, name: s.name, amount, method: $("#pM").value, date: $("#pD").value || today(), ref: $("#pRef").value.trim(), note: $("#pN").value.trim(), program: acc.program, by: S.adminRole, void: false};
       try {
         const id = "p-" + uid() + uid();
         await runTransaction(db, async tx => {
           const c = await tx.get(ref("fin/counter")); const n = ((c.exists() && c.data().last) || 0) + 1;
           pay.receiptNo = `${today().slice(0, 4)}-${String(n).padStart(5, "0")}`;
-          tx.set(ref("fin/counter"), {last: n}); tx.set(ref("payments/" + id), {...pay, at: serverTimestamp()});
+          tx.set(ref("fin/counter"), {last: n}); tx.set(ref("payments/" + id), {...pay, ...(img ? {hasImg: true} : {}), at: serverTimestamp()});
+          if (img) tx.set(ref("receipts/" + id), {img, coll: "payments", at: new Date().toISOString(), by: S.adminRole});
         });
         logAction("تسجيل دفعة", `${s.name} · ${SAR(amount)} · سند ${pay.receiptNo}`);
         const after = Math.max(0, Math.round((st.remaining - amount) * 100) / 100);
-        fillPrint(w, `سند قبض ${pay.receiptNo}`, [{html: receiptHTML({...pay, id}, acc, after)}]);
-        toast("انسجلت الدفعة");
+        fillPrintFin(w, `سند قبض ${pay.receiptNo}`, [{html: receiptHTML({...pay, id}, acc, after)}]);
+        toast("انسجلت الدفعة"); if ($("#pImg")) $("#pImg").value = ""; draw();
       } catch (e) { w.close(); handleWriteErr(e); }
     };
-    $("#modalBox").querySelectorAll("[data-prc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.prc); const w = openPrint(); fillPrint(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
+    bindRcpt($("#modalBox"));
+    $("#modalBox").querySelectorAll("[data-payinst]").forEach(b => b.onclick = () => {
+      $("#pAmt").value = b.dataset.payinst; $("#pN").value = b.dataset.instlbl;
+      $("#pAmt").closest(".card").scrollIntoView({behavior: "smooth", block: "center"});
+      $("#pImg").focus(); toast("المبلغ جاهز، أرفق صورة الإيصال واضغط تسجيل الدفعة");
+    });
+    $("#modalBox").querySelectorAll("[data-prc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.prc); const w = openPrint(); fillPrintFin(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
     $("#modalBox").querySelectorAll("[data-pv]").forEach(b => b.onclick = async () => {
       const reason = b.dataset.sure ? ($("#pvR") || {}).value : "";
       if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="pvR" placeholder="سبب الإلغاء" style="width:160px">`); b.textContent = "تأكيد الإلغاء"; return; }
@@ -2362,7 +2381,7 @@ function openFinAccount(num){
       try { await setDoc(ref("payments/" + b.dataset.pv), {void: true, voidReason: reason.trim(), voidBy: S.adminRole, voidAt: new Date().toISOString()}, {merge: true}); logAction("إلغاء دفعة", `${s.name} · ${reason.trim()}`); toast("انلغت الدفعة"); }
       catch (e) { handleWriteErr(e); }
     });
-    $("#fStmt").onclick = () => { const w = openPrint(); fillPrint(w, `كشف حساب ${s.name}`, [{html: statementHTML(s, acc, accStatus(acc, paysOf(num)), paysOf(num))}]); };
+    $("#fStmt").onclick = () => { const w = openPrint(); fillPrintFin(w, `كشف حساب ${s.name}`, [{html: statementHTML(s, acc, accStatus(acc, paysOf(num)), paysOf(num))}]); };
   };
   $("#modal").classList.add("on");
   draw();
@@ -2401,8 +2420,9 @@ function finPayments(el){
   el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">الدفعات</h2><div class="row"><input type="month" id="payM" value="${esc(m)}" style="width:170px"><button class="btn sm" id="payX">تنزيل Excel</button></div></div>
     <p class="muted" style="margin:8px 0 0">${list.filter(p => !p.void).length} دفعة · المجموع <b>${SAR(tot)}</b></p></div>
   <div class="tbl"><table><thead><tr><th>السند</th><th>التاريخ</th><th class="nm">الطالب</th><th>المبلغ</th><th>الطريقة</th><th>المرجع</th><th></th></tr></thead><tbody>
-  ${list.map(p => `<tr style="${p.void ? "opacity:.5;text-decoration:line-through" : ""}"><td>${esc(p.receiptNo)}</td><td>${dH(p.date)}</td><td class="nm">${esc(p.name)}</td><td>${SAR(p.amount)}</td><td>${esc(p.method)}</td><td>${esc(p.ref || "")}</td><td><button class="btn sm" data-fo="${esc(p.num)}">الحساب</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">ما فيه دفعات في هذا الشهر</td></tr>`}</tbody></table></div>`;
+  ${list.map(p => `<tr style="${p.void ? "opacity:.5;text-decoration:line-through" : ""}"><td>${esc(p.receiptNo)}</td><td>${dH(p.date)}</td><td class="nm">${esc(p.name)}</td><td>${SAR(p.amount)}</td><td>${esc(p.method)}</td><td>${esc(p.ref || "")}</td><td>${p.hasImg ? `<button class="btn sm" data-rview="payments:${esc(p.id)}">الإيصال</button> ` : ""}<button class="btn sm" data-fo="${esc(p.num)}">الحساب</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">ما فيه دفعات في هذا الشهر</td></tr>`}</tbody></table></div>`;
   $("#payM").onchange = e => { S.payM = e.target.value; render(); };
+  bindRcpt(el);
   el.querySelectorAll("[data-fo]").forEach(b => b.onclick = () => openFinAccount(b.dataset.fo));
   $("#payX").onclick = () => excelDownload(`الدفعات ${m}`, [{title: "الدفعات", rows: [[INST_AR], [`الدفعات · ${m}`], [], ["السند", "التاريخ", "الطالب", "الرقم", "المبلغ", "الطريقة", "المرجع", "الحالة"], ...list.map(p => [p.receiptNo, p.date, p.name, p.num, Number(p.amount), p.method, p.ref || "", p.void ? "ملغى" : "مستلم"]), [], ["", "", "المجموع", "", tot]], widths: [13, 12, 28, 11, 11, 14, 16, 9]}]);
 }
@@ -2439,6 +2459,35 @@ function finSettings(el){
   el.querySelectorAll("[data-pdel]").forEach(b => b.onclick = () => { const l = clone(progs); l.splice(Number(b.dataset.pdel), 1); save(l); });
 }
 
+
+/* ---- receipt images (compressed into Firestore, kept apart from the payment record) ---- */
+const rcptBtns = (coll, x) => x.hasImg ? `<button class="btn sm" data-rview="${coll}:${esc(x.id)}">الإيصال</button>` : x.void ? "" : `<label class="btn sm" style="cursor:pointer">إرفاق إيصال<input type="file" accept="image/*" data-ratt="${coll}:${esc(x.id)}" hidden></label>`;
+function bindRcpt(root){
+  root.querySelectorAll("[data-rview]").forEach(b => b.onclick = () => {
+    const [, id] = b.dataset.rview.split(":");
+    const w = window.open("", "_blank"); if (!w) return toast("المتصفح منع فتح النافذة. اسمح بالنوافذ المنبثقة");
+    w.document.write("<p style='font-family:sans-serif'>جاري التحميل…</p>");
+    getDoc(ref("receipts/" + id)).then(x => {
+      const img = x.exists() && x.data().img;
+      w.document.open();
+      w.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>الإيصال</title></head><body style="margin:0;background:#222;display:grid;place-items:center;min-height:100vh">${img && /^data:image\//.test(img) ? `<img src="${img}" style="max-width:100%;max-height:100vh">` : `<p style="color:#fff;font-family:sans-serif">ما فيه إيصال</p>`}</body></html>`);
+      w.document.close();
+    }).catch(() => { w.close(); toast("تعذّر فتح الإيصال"); });
+  });
+  root.querySelectorAll("[data-ratt]").forEach(inp => inp.onchange = async () => {
+    const [coll, id] = inp.dataset.ratt.split(":"), f = inp.files[0]; if (!f) return;
+    try { toast("جاري ضغط الصورة ورفعها…"); await saveRcpt(coll, id, await compressImage(f)); logAction("إرفاق إيصال", coll === "payments" ? "دفعة" : "مصروف"); toast("انرفق الإيصال"); inp.value = ""; if (S._finModal && S._finDraw) S._finDraw(); else render(); }
+    catch (e) { inp.value = ""; e && e.message === "too-big" ? toast("الصورة كبيرة، صوّرها بدقة أقل") : handleWriteErr(e); }
+  });
+}
+async function saveRcpt(coll, id, img){
+  const b = writeBatch(db);
+  b.set(ref("receipts/" + id), {img, coll, at: new Date().toISOString(), by: S.adminRole});
+  b.set(ref(`${coll}/${id}`), {hasImg: true}, {merge: true});
+  await b.commit();
+}
+const pickedImg = async sel => { const f = $(sel) && $(sel).files[0]; return f ? compressImage(f) : null; };
+
 /* ---- expenses, partners, monthly report ---- */
 const EXP_CATS = ["إيجار", "كهرباء وماء وإنترنت", "تسويق وإعلان", "مستلزمات وقرطاسية", "صيانة", "رسوم حكومية", "رواتب إدارية", "أخرى"];
 const sumAmt = l => Math.round(l.reduce((a, x) => a + (Number(x.amount != null ? x.amount : x.net) || 0), 0) * 100) / 100;
@@ -2456,15 +2505,24 @@ function finExpenses(el){
   const byCat = {}; list.filter(x => !x.void).forEach(x => byCat[x.category] = (byCat[x.category] || 0) + Number(x.amount));
   el.innerHTML = `<div class="card"><h2>تسجيل مصروف</h2>
     <div class="row"><select id="exC" style="width:auto">${EXP_CATS.map(c => `<option>${c}</option>`).join("")}</select><input type="number" id="exA" min="0" step="0.01" placeholder="المبلغ" style="width:130px"><input type="date" id="exD" value="${today()}" max="${today()}" style="width:160px"><select id="exM2" style="width:auto">${["تحويل بنكي", "نقد", "مدى / شبكة"].map(x => `<option>${x}</option>`).join("")}</select></div>
-    <div class="row" style="margin-top:8px"><input type="text" id="exT" class="grow" placeholder="الوصف، مثل: إيجار شهر نوفمبر"><button class="btn gold" id="exAdd">+ تسجيل</button></div></div>
+    <div class="row" style="margin-top:8px"><input type="text" id="exT" class="grow" placeholder="الوصف، مثل: إيجار شهر نوفمبر"></div>
+    <div class="row" style="margin-top:8px"><label class="f grow" for="exImg">صورة الفاتورة أو الإيصال (اختياري)<input type="file" id="exImg" accept="image/*"></label><button class="btn gold" id="exAdd" style="align-self:flex-end">+ تسجيل</button></div></div>
   <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">مصروفات الشهر</h2><input type="month" id="expM" value="${esc(m)}" style="width:170px"></div>
     <p class="muted">المجموع <b>${SAR(sumAmt(list.filter(x => !x.void)))}</b>${Object.keys(byCat).length ? " · " + Object.entries(byCat).map(([k, v]) => `${esc(k)}: ${SAR(v)}`).join(" · ") : ""}</p>
-    <div class="list">${list.map(x => `<div class="item" style="${x.void ? "opacity:.5;text-decoration:line-through" : ""}"><div class="grow"><div class="t">${SAR(x.amount)} · ${esc(x.category)}</div><div class="muted">${dH(x.date)} · ${esc(x.method || "")}${x.desc ? " · " + esc(x.desc) : ""}${x.void ? " · ملغى: " + esc(x.voidReason || "") : ""}</div></div>${x.void ? "" : `<button class="btn sm danger" data-exv="${esc(x.id)}">إلغاء</button>`}</div>`).join("") || `<span class="muted">ما فيه مصروفات في هذا الشهر</span>`}</div></div>`;
+    <div class="list">${list.map(x => `<div class="item" style="${x.void ? "opacity:.5;text-decoration:line-through" : ""}"><div class="grow"><div class="t">${SAR(x.amount)} · ${esc(x.category)}</div><div class="muted">${dH(x.date)} · ${esc(x.method || "")}${x.desc ? " · " + esc(x.desc) : ""}${x.void ? " · ملغى: " + esc(x.voidReason || "") : ""}</div></div>${rcptBtns("expenses", x)}${x.void ? "" : `<button class="btn sm danger" data-exv="${esc(x.id)}">إلغاء</button>`}</div>`).join("") || `<span class="muted">ما فيه مصروفات في هذا الشهر</span>`}</div></div>`;
   $("#expM").onchange = e => { S.expM = e.target.value; render(); };
+  bindRcpt(el);
   $("#exAdd").onclick = async () => {
     const amount = Math.round((Number($("#exA").value) || 0) * 100) / 100; if (amount <= 0) return toast("اكتب المبلغ");
     const d = {category: $("#exC").value, amount, date: $("#exD").value || today(), method: $("#exM2").value, desc: $("#exT").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
-    try { await setDoc(ref("expenses/e-" + uid() + uid()), d); logAction("تسجيل مصروف", `${d.category} · ${SAR(amount)}`); toast("انسجل المصروف"); } catch (e) { handleWriteErr(e); }
+    let img = null; try { img = await pickedImg("#exImg"); } catch { return toast("الصورة كبيرة، صوّرها بدقة أقل"); }
+    const id = "e-" + uid() + uid();
+    try {
+      $("#exAdd").disabled = true;
+      await setDoc(ref("expenses/" + id), d);
+      if (img) await saveRcpt("expenses", id, img);
+      logAction("تسجيل مصروف", `${d.category} · ${SAR(amount)}`); toast("انسجل المصروف"); render();
+    } catch (e) { $("#exAdd").disabled = false; handleWriteErr(e); }
   };
   el.querySelectorAll("[data-exv]").forEach(b => b.onclick = async () => {
     if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="exVR" placeholder="سبب الإلغاء" style="width:150px">`); b.textContent = "تأكيد الإلغاء"; return; }
@@ -2493,7 +2551,7 @@ function finPartners(el){
       <div class="muted">${x.rows.length} طالب · مستحق ${SAR(x.earned)} · مصروف ${SAR(x.paidOut)} · <b>الباقي ${SAR(x.balance)}</b></div>
       ${x.rows.length ? `<details><summary class="muted" style="cursor:pointer">الطلاب</summary><div class="muted">${x.rows.map(r => `${esc(r.acc.name)}: دفع ${SAR(r.st.paid)} ← عمولة ${SAR(r.earned)}`).join("<br>")}</div></details>` : ""}</div>
       <button class="btn sm" data-pst="${esc(x.p.id)}">كشف</button>${x.balance > 0 ? `<button class="btn sm gold" data-ppay="${esc(x.p.id)}">صرف عمولة</button>` : ""}</div>`).join("")}</div>`;
-  el.querySelectorAll("[data-pst]").forEach(b => b.onclick = () => { const x = all.find(y => y.p.id === b.dataset.pst); const w = openPrint(); fillPrint(w, `كشف عمولات ${x.p.name}`, [{html: partnerHTML(x)}]); });
+  el.querySelectorAll("[data-pst]").forEach(b => b.onclick = () => { const x = all.find(y => y.p.id === b.dataset.pst); const w = openPrint(); fillPrintFin(w, `كشف عمولات ${x.p.name}`, [{html: partnerHTML(x)}]); });
   el.querySelectorAll("[data-ppay]").forEach(b => b.onclick = () => {
     const x = all.find(y => y.p.id === b.dataset.ppay);
     S._finModal = null; S._modalGroup = null;
@@ -2506,7 +2564,7 @@ function finPartners(el){
       const amount = Math.round((Number($("#cA").value) || 0) * 100) / 100; if (amount <= 0 || amount > x.balance + 0.01) return toast("المبلغ لازم يكون بين صفر والباقي");
       const w = openPrint(); if (!w) return;
       const d = {partnerId: x.p.id, name: x.p.name, amount, method: $("#cM").value, date: $("#cD").value || today(), note: $("#cN").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
-      try { await setDoc(ref("commPays/c-" + uid() + uid()), d); logAction("صرف عمولة", `${x.p.name} · ${SAR(amount)}`); fillPrint(w, `سند صرف عمولة ${x.p.name}`, [{html: `<h1>سند صرف عمولة</h1><div class="info"><div><b>الشريك:</b> ${esc(d.name)}</div><div><b>التاريخ:</b> ${esc(bothDates(d.date))}</div><div><b>الطريقة:</b> ${esc(d.method)}</div></div><table><tbody><tr><td class="n"><b>المبلغ</b></td><td style="font-size:16px"><b>${SAR(amount)}</b></td></tr><tr><td class="n"><b>الباقي بعد الصرف</b></td><td>${SAR(x.balance - amount)}</td></tr></tbody></table>${d.note ? `<p>ملاحظة: ${esc(d.note)}</p>` : ""}<div class="sig"><div>المالية</div><div>المستلم<br><small>الاسم والتوقيع</small></div></div>`}]); closeModal(); }
+      try { await setDoc(ref("commPays/c-" + uid() + uid()), d); logAction("صرف عمولة", `${x.p.name} · ${SAR(amount)}`); fillPrintFin(w, `سند صرف عمولة ${x.p.name}`, [{html: `<h1>سند صرف عمولة</h1><div class="info"><div><b>الشريك:</b> ${esc(d.name)}</div><div><b>التاريخ:</b> ${esc(bothDates(d.date))}</div><div><b>الطريقة:</b> ${esc(d.method)}</div></div><table><tbody><tr><td class="n"><b>المبلغ</b></td><td style="font-size:16px"><b>${SAR(amount)}</b></td></tr><tr><td class="n"><b>الباقي بعد الصرف</b></td><td>${SAR(x.balance - amount)}</td></tr></tbody></table>${d.note ? `<p>ملاحظة: ${esc(d.note)}</p>` : ""}<div class="sig"><div>المالية</div><div>المستلم<br><small>الاسم والتوقيع</small></div></div>`}]); closeModal(); }
       catch (e) { w.close(); handleWriteErr(e); }
     };
   });
@@ -2539,7 +2597,7 @@ function finReport(el){
   <div class="card"><h2>سنة ${esc(y)}</h2><div class="tbl"><table><thead><tr><th>الشهر</th><th>الإيرادات</th><th>المصروفات</th><th>الصافي</th></tr></thead><tbody>${months.map(x => `<tr><td>${x.k}</td><td>${SAR(x.income)}</td><td>${SAR(x.out)}</td><td style="color:${x.net < 0 ? "var(--abs)" : "inherit"}">${SAR(x.net)}</td></tr>`).join("")}
     <tr><td><b>المجموع</b></td><td><b>${SAR(months.reduce((a, x) => a + x.income, 0))}</b></td><td><b>${SAR(months.reduce((a, x) => a + x.out, 0))}</b></td><td><b>${SAR(months.reduce((a, x) => a + x.net, 0))}</b></td></tr></tbody></table></div></div>`;
   $("#rpM").onchange = e => { S.repM2 = e.target.value; render(); };
-  $("#rpP").onclick = () => { const w = openPrint(); fillPrint(w, `التقرير المالي ${m}`, [{html: html()}]); };
+  $("#rpP").onclick = () => { const w = openPrint(); fillPrintFin(w, `التقرير المالي ${m}`, [{html: html()}]); };
   $("#rpX").onclick = () => excelDownload(`التقرير المالي ${m}`, [
     {title: "الشهر", rows: [[INST_AR], [`التقرير المالي · ${m}`], [], ["البند", "المبلغ"], ["الإيرادات", f.income], ...Object.entries(byCat).map(([k, v]) => ["مصروف: " + k, v]), ["رواتب المدربين", f.salT], ["عمولات الشركاء", f.comT], ["إجمالي المصروفات", f.out], ["الصافي", f.net], [], ["تفصيل المصروفات"], ["التاريخ", "البند", "المبلغ", "الوصف"], ...f.exp.map(x => [x.date, x.category, Number(x.amount), x.desc || ""]), ...f.sal.map(x => [x.paidDate, "راتب: " + x.name, Number(x.net), ""]), ...f.com.map(x => [x.date, "عمولة: " + x.name, Number(x.amount), x.note || ""])], widths: [14, 26, 12, 30]},
     {title: "السنة", rows: [[`سنة ${y}`], [], ["الشهر", "الإيرادات", "المصروفات", "الصافي"], ...months.map(x => [x.k, x.income, x.out, x.net])], widths: [12, 14, 14, 14]}]);
@@ -2563,7 +2621,7 @@ function finSalaries(el){
     try { await setDoc(ref("fin/settings"), {salaries: r}, {merge: true}); S.finSet.salaries = r; logAction("رواتب المدربين", "تعديل الرواتب"); toast("انحفظت الرواتب"); } catch (e) { handleWriteErr(e); }
   };
   el.querySelectorAll("[data-spay]").forEach(b => b.onclick = () => openSalaryPay(b.dataset.spay, m));
-  el.querySelectorAll("[data-svp]").forEach(b => b.onclick = () => { const r = rec(S.trainers[b.dataset.svp]); const w = openPrint(); fillPrint(w, `سند صرف راتب ${r.name}`, [{html: salaryHTML(r)}]); });
+  el.querySelectorAll("[data-svp]").forEach(b => b.onclick = () => { const r = rec(S.trainers[b.dataset.svp]); const w = openPrint(); fillPrintFin(w, `سند صرف راتب ${r.name}`, [{html: salaryHTML(r)}]); });
   el.querySelectorAll("[data-sdl]").forEach(b => b.onclick = async () => {
     if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; }
     try { await deleteDoc(ref(`salaryPays/${m}_${b.dataset.sdl}`)); logAction("إلغاء صرف راتب", `${(S.trainers[b.dataset.sdl] || {}).name} · ${m}`); toast("انلغى الصرف"); } catch (e) { handleWriteErr(e); }
@@ -2593,7 +2651,7 @@ function openSalaryPay(tid, m){
     if (net() <= 0) return toast("الصافي لازم يكون أكبر من صفر");
     const w = openPrint(); if (!w) return;
     const r = {tid, name: t.name, month: m, base: Number($("#sB").value) || 0, bonus: Number($("#sAdd").value) || 0, deduct: Number($("#sDed").value) || 0, net: net(), method: $("#sMeth").value, paidDate: $("#sD").value || today(), note: $("#sNote").value.trim(), by: S.adminRole, at: new Date().toISOString()};
-    try { await setDoc(ref(`salaryPays/${m}_${tid}`), r); logAction("صرف راتب", `${t.name} · ${m} · ${SAR(r.net)}`); fillPrint(w, `سند صرف راتب ${t.name}`, [{html: salaryHTML(r)}]); closeModal(); }
+    try { await setDoc(ref(`salaryPays/${m}_${tid}`), r); logAction("صرف راتب", `${t.name} · ${m} · ${SAR(r.net)}`); fillPrintFin(w, `سند صرف راتب ${t.name}`, [{html: salaryHTML(r)}]); closeModal(); }
     catch (e) { w.close(); handleWriteErr(e); }
   };
 }
@@ -2612,7 +2670,7 @@ function studentFin(el){
     ${st.next ? `<div class="notice" style="margin-top:10px">الدفعة القادمة: <b>${SAR(st.next.amount)}</b> بتاريخ ${esc(fmtDate(st.next.due))}</div>` : ""}</div>
   <div class="card"><h2>جدول الدفعات</h2><div class="tbl"><table><thead><tr><th>#</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>${st.sched.map((i, k) => `<tr><td>${i.label ? esc(i.label) : k + 1}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>`).join("")}</tbody></table></div></div>
   <div class="card"><h2>السندات</h2><div class="list">${pays.map(p => `<div class="item"><div class="grow"><div class="t">${SAR(p.amount)}</div><div class="muted">سند ${esc(p.receiptNo)} · ${dH(p.date)} · ${esc(p.method)}</div></div><button class="btn sm" data-myrc="${esc(p.id)}">طباعة</button></div>`).join("") || `<span class="muted">ما فيه دفعات</span>`}</div></div>`;
-  el.querySelectorAll("[data-myrc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.myrc); const w = openPrint(); fillPrint(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
+  el.querySelectorAll("[data-myrc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.myrc); const w = openPrint(); fillPrintFin(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
 }
 
 /* trainers tab */
