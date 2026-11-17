@@ -2195,7 +2195,7 @@ function buildPlan(net, plan, start, months, second){
   if (!net || !start) return [];
   if (plan === "half") { const a = Math.round(net / 2 * 100) / 100; return [{due: start, amount: a}, {due: second || addMonths(start, 2), amount: Math.round((net - a) * 100) / 100}]; }
   if (plan === "monthly") {
-    const n = Math.max(2, Math.min(24, Number(months) || 4)), a = Math.floor(net / n * 100) / 100;
+    const n = Math.max(2, Math.min(60, Number(months) || 4)), a = Math.floor(net / n * 100) / 100;
     return Array.from({length: n}, (_, i) => ({due: addMonths(start, i), amount: i === n - 1 ? Math.round((net - a * (n - 1)) * 100) / 100 : a}));
   }
   return [{due: start, amount: net}];
@@ -2293,7 +2293,7 @@ function openFinAccount(num){
       <div class="row" style="margin-top:8px">
         <label class="f grow" for="fPl">طريقة السداد<select id="fPl">${Object.entries(PLANS).map(([k, v]) => `<option value="${k}" ${acc.plan === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
         <label class="f" for="fSt" style="width:160px">تاريخ أول دفعة<input type="date" id="fSt" value="${esc(acc.start || today())}"></label>
-        <label class="f" for="fMo" style="width:110px;${acc.plan === "monthly" ? "" : "display:none"}">عدد الأشهر<input type="number" id="fMo" min="2" max="24" value="${acc.months || 4}"></label>
+        <label class="f" for="fMo" style="width:110px;${acc.plan === "monthly" ? "" : "display:none"}">عدد الأشهر<input type="number" id="fMo" min="2" max="60" value="${acc.months || 4}"></label>
         <label class="f" for="fSec" style="width:160px;${acc.plan === "half" ? "" : "display:none"}">موعد الدفعة الثانية<input type="date" id="fSec" value="${esc(acc.second || "")}"></label>
         <button class="btn sm" id="fGen" style="align-self:flex-end">توليد الجدول</button>
       </div>
@@ -2364,7 +2364,7 @@ function openFinAccount(num){
         });
         logAction("تسجيل دفعة", `${s.name} · ${SAR(amount)} · سند ${pay.receiptNo}`);
         const after = Math.max(0, Math.round((st.remaining - amount) * 100) / 100);
-        fillPrintFin(w, `سند قبض ${pay.receiptNo}`, [{html: receiptHTML({...pay, id}, acc, after)}]);
+        fillPrintFin(w, `سند قبض ${pay.receiptNo}`, [{html: receiptHTML({...pay, id}, acc, [...paysOf(num).filter(x => x.id !== id), {...pay, id}])}]);
         toast("انسجلت الدفعة"); if ($("#pImg")) $("#pImg").value = ""; draw();
       } catch (e) { w.close(); handleWriteErr(e); }
     };
@@ -2374,7 +2374,7 @@ function openFinAccount(num){
       $("#pAmt").closest(".card").scrollIntoView({behavior: "smooth", block: "center"});
       $("#pImg").focus(); toast("المبلغ جاهز، أرفق صورة الإيصال واضغط تسجيل الدفعة");
     });
-    $("#modalBox").querySelectorAll("[data-prc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.prc); const w = openPrint(); fillPrintFin(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
+    $("#modalBox").querySelectorAll("[data-prc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.prc); const w = openPrint(); fillPrintFin(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, paysOf(num))}]); });
     $("#modalBox").querySelectorAll("[data-pv]").forEach(b => b.onclick = async () => {
       const reason = b.dataset.sure ? ($("#pvR") || {}).value : "";
       if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="pvR" placeholder="سبب الإلغاء" style="width:160px">`); b.textContent = "تأكيد الإلغاء"; return; }
@@ -2391,7 +2391,12 @@ function openFinAccount(num){
 function finReminder(s, st){
   return `السلام عليكم ${s.name}\nالرقم الأكاديمي: ${s.num}\n\nنذكّركم بسداد المستحقات الدراسية.\nالمتأخر: ${SAR(st.overdue)}\nالمتبقي الكلي: ${SAR(st.remaining)}${st.next ? `\nالدفعة القادمة: ${SAR(st.next.amount)} بتاريخ ${st.next.due}` : ""}\n\nالمالية\n${INST_AR}`;
 }
-function receiptHTML(p, acc, after){
+/* the receipt shows the account as it stood right after this payment: total, paid so far, remaining */
+function receiptHTML(p, acc, allPays){
+  const key = x => `${x.date || ""}|${x.receiptNo || ""}`;
+  const net = accStatus(acc, []).net;
+  const paidSoFar = Math.round((allPays || []).filter(x => !x.void && x.id !== p.id && key(x) <= key(p)).reduce((a, x) => a + Number(x.amount || 0), 0) * 100) / 100 + (p.void ? 0 : Number(p.amount || 0));
+  const after = Math.max(0, Math.round((net - paidSoFar) * 100) / 100);
   const prog = ((S.finSet && S.finSet.programs) || []).find(x => x.id === (p.program || acc.program));
   return `<h1>سند قبض</h1>
   <div class="info"><div><b>رقم السند:</b> ${esc(p.receiptNo || "—")}</div><div><b>التاريخ:</b> ${esc(bothDates(p.date))}</div></div>
@@ -2401,7 +2406,9 @@ function receiptHTML(p, acc, after){
     <tr><td class="n"><b>مبلغ وقدره</b></td><td class="n" style="font-size:16px"><b>${SAR(p.amount)}</b></td></tr>
     <tr><td class="n"><b>طريقة الدفع</b></td><td class="n">${esc(p.method)}${p.ref ? " · مرجع: " + esc(p.ref) : ""}</td></tr>
     <tr><td class="n"><b>وذلك عن</b></td><td class="n">رسوم ${esc(prog ? prog.name : "البرنامج التدريبي")}${p.note ? " · " + esc(p.note) : ""}</td></tr>
-    ${after !== null ? `<tr><td class="n"><b>المتبقي بعد الدفعة</b></td><td class="n">${SAR(after)}</td></tr>` : ""}
+    <tr><td class="n"><b>المبلغ الإجمالي</b></td><td class="n">${SAR(net)}${acc.discount ? ` <span style="color:#666;font-size:11px">(بعد خصم ${SAR(acc.discount)})</span>` : ""}</td></tr>
+    <tr><td class="n"><b>المبلغ المسدَّد</b></td><td class="n">${SAR(paidSoFar)} <span style="color:#666;font-size:11px">(شامل هذه الدفعة)</span></td></tr>
+    <tr><td class="n"><b>المبلغ المتبقي</b></td><td class="n"><b>${SAR(after)}</b></td></tr>
   </tbody></table>
   <p style="font-size:10.5px;color:#666;margin-top:10px">سند قبض داخلي، وليس فاتورة ضريبية.</p>
   <div class="sig"><div>المحاسب</div><div>الختم</div></div>`;
@@ -2724,7 +2731,7 @@ function studentFin(el){
     ${st.next ? `<div class="notice" style="margin-top:10px">الدفعة القادمة: <b>${SAR(st.next.amount)}</b> بتاريخ ${esc(fmtDate(st.next.due))}</div>` : ""}</div>
   <div class="card"><h2>جدول الدفعات</h2><div class="tbl"><table><thead><tr><th>#</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>${st.sched.map((i, k) => `<tr><td>${i.label ? esc(i.label) : k + 1}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>`).join("")}</tbody></table></div></div>
   <div class="card"><h2>السندات</h2><div class="list">${pays.map(p => `<div class="item"><div class="grow"><div class="t">${SAR(p.amount)}</div><div class="muted">سند ${esc(p.receiptNo)} · ${dH(p.date)} · ${esc(p.method)}</div></div><button class="btn sm" data-myrc="${esc(p.id)}">طباعة</button></div>`).join("") || `<span class="muted">ما فيه دفعات</span>`}</div></div>`;
-  el.querySelectorAll("[data-myrc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.myrc); const w = openPrint(); fillPrintFin(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
+  el.querySelectorAll("[data-myrc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.myrc); const w = openPrint(); fillPrintFin(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, S.myPay || [])}]); });
 }
 
 /* trainers tab */
