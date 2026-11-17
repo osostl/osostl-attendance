@@ -101,7 +101,6 @@ const S = {
 if (!configured) {
   $("#app").innerHTML = `<div class="notice err">البوابة تحتاج إعدادات Firebase في ملف config.js.</div>`;
 } else {
-  onSnapshot(ref("public/trainers"), snap => { S.pub = snap.exists() ? snap.data() : {list: {}}; if (!S.authUser) render(); }, () => { S.pub = {list: {}}; render(); });
   onAuthStateChanged(auth, user => {
     stopAll();
     S.authUser = user; S.role = null; S.adminRole = null; S.me = null; S.myNum = null; S.authReady = true;
@@ -145,9 +144,10 @@ function startData(){
   }
 }
 function fail(err){ console.error(err); $("#app").innerHTML = `<div class="notice err">تعذّر تحميل البيانات. ${err && err.code === "permission-denied" ? "حسابك ما عنده صلاحية، أو قواعد الحماية في Firebase تحتاج تحديث." : "تأكد من الاتصال وحدّث الصفحة."}</div>`; }
-function stopAll(){ S.subs.forEach(u => u()); S.subs = []; stopAtt(); stopAdminSubs(); S.trainers = {}; S.groups = {}; S.secrets = {}; S.students = {}; S.stSecrets = {}; S.grades = {}; S.myStudent = null; S.myAtt = []; S.myResults = []; }
+function stopAll(){ S.subs.forEach(u => u()); S.subs = []; stopAtt(); stopAdminSubs(); S.trainers = {}; S.groups = {}; S.secrets = {}; S.students = {}; S.stSecrets = {}; S.grades = {}; S.myStudent = null; S.myAtt = []; S.myResults = []; S._trainerSynced = false; }
 
 function afterData(){
+  if (S.role === "admin") syncTrainerNumbers();
   if (S.view === "trainer" && S.tGroup && !S.groups[S.tGroup]) { S.tGroup = null; stopAtt(); }
   if (S.view === "admin" && $("#modal").classList.contains("on") && S._modalGroup) renderModalStudents();
   if (busyEditing()) return;
@@ -204,7 +204,7 @@ function renderHome(app){
   <div class="card"><h2>اختر البوابة</h2><p class="muted" style="margin:0">اليوم ${esc(fmtDate(today()))}</p></div>
   <div class="portals">
     <button class="portal t" id="goS"><b>بوابة الطلاب</b><span class="muted">ادخل برقمك الأكاديمي ورمزك، وشوف جدولك وحضورك ودرجاتك المعتمدة.</span></button>
-    <button class="portal t" id="goT"><b>بوابة المدربين</b><span class="muted">حضّر طلابك وسجّل الحضور والانصراف، وارصد الدرجات.</span></button>
+    <button class="portal t" id="goT"><b>بوابة المدربين</b><span class="muted">ادخل برقمك ورمزك، وحضّر طلابك وارصد الدرجات.</span></button>
     <button class="portal" id="goA"><b>بوابة الشؤون الأكاديمية</b><span class="muted">المدربون والطلاب والمقررات، واعتماد الدرجات والتقارير.</span></button>
   </div>`;
   $("#goS").onclick = () => go("studentLogin");
@@ -229,11 +229,19 @@ async function doLogin(fn, back){
   catch (err) { S.view = back; render(); $("#lerr").innerHTML = `<div class="notice err">${esc(err.userMsg || loginErr(err))}</div>`; }
 }
 function renderTrainerLogin(app){
-  const list = Object.entries((S.pub && S.pub.list) || {}).map(([id, t]) => ({id, ...t})).sort((a,b) => a.name.localeCompare(b.name, "ar"));
   app.innerHTML = loginCard("دخول المدربين", `
-    <label class="f" for="lt">الاسم<select id="lt" required><option value="">اختر اسمك</option>${list.map(t => `<option value="${esc(t.id)}">${esc(trainerTitle(t))}</option>`).join("")}</select></label>
-    <label class="f" for="lc">الرمز الخاص<input type="password" id="lc" inputmode="numeric" required></label>`);
-  $("#lf").onsubmit = e => { e.preventDefault(); const t = S.pub.list[$("#lt").value]; if (!t) return; const code = digits($("#lc").value); doLogin(() => signInWithEmailAndPassword(auth, t.email, code), "trainerLogin"); };
+    <label class="f" for="tn">رقم المدرب<input type="text" id="tn" inputmode="numeric" required placeholder="مثل 1001"></label>
+    <label class="f" for="lc">الرمز<input type="password" id="lc" inputmode="numeric" required></label>`);
+  $("#lf").onsubmit = e => {
+    e.preventDefault();
+    const num = digits($("#tn").value), code = digits($("#lc").value);
+    doLogin(async () => {
+      const snap = await getDoc(ref("public/trainerLogin"));
+      const email = snap.exists() && snap.data().map && snap.data().map[num];
+      if (!email) { const er = new Error("no"); er.userMsg = "رقم المدرب غير موجود. تأكد منه من الشؤون الأكاديمية."; throw er; }
+      await signInWithEmailAndPassword(auth, email, code);
+    }, "trainerLogin");
+  };
 }
 function renderAdminLogin(app){
   app.innerHTML = loginCard("دخول الشؤون الأكاديمية", `
@@ -911,23 +919,36 @@ async function runStudentImport(){
 }
 
 /* trainers tab */
-function publicList(over){
-  const list = {};
-  Object.values(over || S.trainers).forEach(t => { if (t.email) list[t.id] = {name: t.name, gender: t.gender, email: t.email}; });
-  return {list};
+function trainerLoginMap(over){
+  const map = {};
+  Object.values(over || S.trainers).forEach(t => { if (t.num && t.email) map[t.num] = t.email; });
+  return {map};
+}
+const nextTrainerNum = (over) => String(Math.max(1000, ...Object.values(over || S.trainers).map(t => Number(t.num) || 0)) + 1);
+/* give every trainer a number and publish number -> login only (no names) */
+async function syncTrainerNumbers(){
+  if (S._trainerSynced || S.role !== "admin" || !S.loaded.trainers) return;
+  S._trainerSynced = true;
+  const all = clone(S.trainers);
+  const missing = Object.values(all).filter(t => !t.num).sort((a,b) => a.name.localeCompare(b.name, "ar"));
+  const b = writeBatch(db);
+  missing.forEach(t => { t.num = nextTrainerNum(all); all[t.id].num = t.num; const d = clone(t); delete d.id; b.set(ref("trainers/" + t.id), d); });
+  b.set(ref("public/trainerLogin"), trainerLoginMap(all));
+  b.set(ref("public/trainers"), {list: {}});
+  try { await b.commit(); if (missing.length) toast(`انعطى ${missing.length} مدرب أرقام دخول`); } catch (e) { S._trainerSynced = false; console.error(e); }
 }
 async function saveTrainer(tid, data, code){
   const b = writeBatch(db);
   b.set(ref("trainers/" + tid), data);
   if (code) b.set(ref("secrets/" + tid), {code});
-  b.set(ref("public/trainers"), publicList({...S.trainers, [tid]: {id: tid, ...data}}));
+  b.set(ref("public/trainerLogin"), trainerLoginMap({...S.trainers, [tid]: {id: tid, ...data}}));
   await b.commit();
 }
 function adminTrainers(el){
   const ts = Object.values(S.trainers).sort((a,b)=>a.name.localeCompare(b.name,"ar"));
   el.innerHTML = `
   <div class="card"><h2>المدربين والرموز</h2>
-    <p class="muted" style="margin-top:0">كل مدرب يدخل بوابته باسمه ورمزه. أرسل الرمز للمدرب بشكل خاص.</p>
+    <p class="muted" style="margin-top:0">كل مدرب يدخل برقمه ورمزه. أرسل له رسالته من زر "نسخ" بشكل خاص.</p>
     <form id="nt" class="row" autocomplete="off">
       <input type="text" id="ntn" class="grow" placeholder="اسم المدرب أو المدربة" required>
       <select id="ntg" style="width:auto"><option value="m">مدرب</option><option value="f">مدربة</option></select>
@@ -938,8 +959,8 @@ function adminTrainers(el){
     const gs = Object.values(S.groups).filter(g => g.trainerId === t.id);
     const n = gs.reduce((a,g) => a + (g.students||[]).length, 0);
     return `<div class="item"><div class="grow"><div class="t">${esc(trainerTitle(t))}</div><div class="muted">${gs.length} شعبة · ${n} متدرب${gs.length ? " · " + gs.map(g => esc(g.course)).join("، ") : ""}</div></div>
-      <span class="code">${esc(S.secrets[t.id] || "••••••")}</span>
-      <button class="btn sm" data-copy="${esc(t.id)}">نسخ الرمز</button>
+      <span class="code">${esc(t.num || "—")}</span><span class="code">${esc(S.secrets[t.id] || "••••••")}</span>
+      <button class="btn sm" data-copy="${esc(t.id)}">نسخ</button>
       <button class="btn sm" data-new="${esc(t.id)}">رمز جديد</button>
       <button class="btn sm danger" data-del="${esc(t.id)}">حذف</button></div>`; }).join("")}</div>`;
   $("#nt").onsubmit = async e => {
@@ -947,13 +968,13 @@ function adminTrainers(el){
     const name = $("#ntn").value.trim(); if (!name) return;
     $("#ntb").disabled = true;
     const tid = "t-" + uid(), code = newCode();
-    try { const acc = await createAccount(tid, 0, code); await saveTrainer(tid, {name, gender: $("#ntg").value, ...acc}, code); toast(`انضاف ${name} · الرمز ${code}`); }
+    try { const num = nextTrainerNum(); const acc = await createAccount(tid, 0, code); await saveTrainer(tid, {name, gender: $("#ntg").value, num, ...acc}, code); toast(`انضاف ${name} · الرقم ${num} · الرمز ${code}`); }
     catch (err) { toast(accountErr(err)); }
     $("#ntb").disabled = false;
   };
   el.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
     const t = S.trainers[b.dataset.copy], code = S.secrets[t.id];
-    const msg = `${trainerTitle(t)}، رمز دخولك لبوابة التحضير في معهد أسس: ${code}\nرابط البوابة: ${location.href.split("#")[0].split("?")[0]}`;
+    const msg = `${trainerTitle(t)}\nرقم المدرب: ${t.num || "—"}\nرمز الدخول: ${code}\nبوابة المدربين: ${location.href.split("#")[0].split("?")[0]}`;
     try { await navigator.clipboard.writeText(msg); toast("انتسخت رسالة الرمز"); } catch { toast("المتصفح منع النسخ"); }
   });
   el.querySelectorAll("[data-new]").forEach(b => b.onclick = async () => {
@@ -970,7 +991,7 @@ function adminTrainers(el){
     Object.values(S.groups).filter(g => g.trainerId === tid).forEach(g => batch.update(ref("groups/" + g.id), {trainerId: ""}));
     batch.delete(ref("trainers/" + tid)); batch.delete(ref("secrets/" + tid));
     const rest = {...S.trainers}; delete rest[tid];
-    batch.set(ref("public/trainers"), publicList(rest));
+    batch.set(ref("public/trainerLogin"), trainerLoginMap(rest));
     try { await batch.commit(); toast("انحذف المدرب، وشعبه صارت بدون مدرب"); } catch (err) { handleWriteErr(err); }
   });
 }
