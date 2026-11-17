@@ -206,7 +206,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -2221,11 +2221,11 @@ const paysOf = num => (S.pays || []).filter(p => p.num === num);
 
 function adminFinance(el){
   const t = S.finTab || "sum";
-  const tabs = [["sum", "الملخص"], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ["set", "الإعدادات"]];
+  const tabs = [["sum", "الملخص"], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ["set", "الإعدادات"]];
   el.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${t === k ? "on" : ""}" data-ft="${k}">${v}</button>`).join("")}</div></div><div id="fb"></div>`;
   el.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { S.finTab = b.dataset.ft; render(); });
   if (!S.finSet) { $("#fb").innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
-  ({sum: finSummary, acc: finAccounts, pay: finPayments, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, set: finSettings})[t]($("#fb"));
+  ({sum: finSummary, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, set: finSettings})[t]($("#fb"));
 }
 function finRows(){
   return Object.values(S.students).map(s => { const acc = (S.finAcc || {})[s.num]; return {s, acc, st: acc ? accStatus(acc, paysOf(s.num)) : {net: 0, paid: 0, remaining: 0, overdue: 0, status: "none"}}; });
@@ -2489,6 +2489,59 @@ async function saveRcpt(coll, id, img){
 }
 const pickedImg = async sel => { const f = $(sel) && $(sel).files[0]; return f ? compressImage(f) : null; };
 
+
+/* ---- receipts register: every attached receipt in one place, with its reference, printable ---- */
+function finReceipts(el){
+  const f = S.rcF || {who: "", m: "", kind: "all"};
+  const studs = [...new Map((S.pays || []).filter(p => p.hasImg).map(p => [p.num, p.name])).entries()].sort((a, b) => a[1].localeCompare(b[1], "ar"));
+  const pays = (S.pays || []).filter(p => p.hasImg && (f.kind !== "exp") && (!f.who || p.num === f.who) && (!f.m || (p.date || "").startsWith(f.m)))
+    .map(p => ({coll: "payments", id: p.id, date: p.date, title: `${p.name} · ${p.num}`, sub: `سند ${p.receiptNo} · ${p.method}`, amount: p.amount, ref: p.ref || "", voided: p.void, x: p}));
+  const exps = f.who ? [] : (S.exps || []).filter(x => x.hasImg && f.kind !== "pay" && (!f.m || (x.date || "").startsWith(f.m)))
+    .map(x => ({coll: "expenses", id: x.id, date: x.date, title: `مصروف: ${x.category}`, sub: `${x.desc || ""}${x.method ? " · " + x.method : ""}`, amount: x.amount, ref: x.ref || "", voided: x.void, x}));
+  const list = [...pays, ...exps].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  el.innerHTML = `<div class="card"><h2>الإيصالات</h2>
+    <p class="muted" style="margin-top:0">كل الإيصالات المرفقة في مكان واحد. اختر طالب أو اترك «كل الطلاب»، وتقدر تطبعها كلها مرة وحدة.</p>
+    <div class="row">
+      <select id="rcW" class="grow"><option value="">كل الطلاب</option>${studs.map(([n, nm]) => `<option value="${esc(n)}" ${f.who === n ? "selected" : ""}>${esc(nm)} · ${esc(n)}</option>`).join("")}</select>
+      <input type="month" id="rcM" value="${esc(f.m)}" style="width:170px" aria-label="الشهر">
+      <select id="rcK" style="width:auto"><option value="all" ${f.kind === "all" ? "selected" : ""}>الدفعات والمصروفات</option><option value="pay" ${f.kind === "pay" ? "selected" : ""}>دفعات الطلاب</option><option value="exp" ${f.kind === "exp" ? "selected" : ""}>المصروفات</option></select>
+      ${f.m ? `<button class="btn sm" id="rcAllM">كل الشهور</button>` : ""}
+    </div>
+    <div class="row" style="margin-top:10px"><b class="grow">${list.length} إيصال · ${SAR(list.filter(x => !x.voided).reduce((a, x) => a + Number(x.amount), 0))}</b>${list.length ? `<button class="btn pri sm" id="rcPrint">طباعة ${list.length === 1 ? "الإيصال" : "الإيصالات (" + list.length + ")"}</button>` : ""}</div></div>
+  <div class="list">${list.map(r => `<div class="item" style="${r.voided ? "opacity:.55" : ""}"><div class="grow"><div class="t">${esc(r.title)}${r.voided ? ` <span class="pill a">ملغى</span>` : ""}</div><div class="muted">${dH(r.date)} · ${SAR(r.amount)} · ${esc(r.sub)}</div></div>
+      <label class="muted" for="rf-${esc(r.id)}">المرجع</label><input type="text" id="rf-${esc(r.id)}" data-rref="${r.coll}:${esc(r.id)}" value="${esc(r.ref)}" placeholder="رقم العملية" style="width:170px">
+      <button class="btn sm" data-rview="${r.coll}:${esc(r.id)}">عرض</button><button class="btn sm" data-rprint="${r.coll}:${esc(r.id)}">طباعة</button></div>`).join("") || `<div class="card empty">ما فيه إيصالات مرفقة${f.who || f.m ? " بهذا الاختيار" : ""}.</div>`}</div>`;
+  const setF = d => { S.rcF = {...f, ...d}; render(); };
+  $("#rcW").onchange = e => setF({who: e.target.value, kind: e.target.value ? "pay" : f.kind});
+  $("#rcM").onchange = e => setF({m: e.target.value});
+  $("#rcK").onchange = e => setF({kind: e.target.value});
+  if ($("#rcAllM")) $("#rcAllM").onclick = () => setF({m: ""});
+  bindRcpt(el);
+  el.querySelectorAll("[data-rref]").forEach(inp => inp.onchange = async () => {
+    const [coll, id] = inp.dataset.rref.split(":"), v = inp.value.trim().slice(0, 80);
+    try { await setDoc(ref(`${coll}/${id}`), {ref: v}, {merge: true}); logAction("مرجع إيصال", v); toast("انحفظ المرجع"); } catch (e) { handleWriteErr(e); }
+  });
+  const printList = async (items, title) => {
+    const w = openPrint(); if (!w) return;
+    try {
+      const imgs = await Promise.all(items.map(r => getDoc(ref("receipts/" + r.id)).then(x => x.exists() ? x.data().img : null).catch(() => null)));
+      const pages = items.map((r, i) => ({html: `<h1>${r.coll === "payments" ? "إيصال دفعة" : "إيصال مصروف"}</h1>
+        <table><tbody>
+          <tr><td class="n" style="width:28%"><b>${r.coll === "payments" ? "الطالب" : "البند"}</b></td><td class="n">${esc(r.title)}</td></tr>
+          <tr><td class="n"><b>التاريخ</b></td><td class="n">${esc(bothDates(r.date))}</td></tr>
+          <tr><td class="n"><b>المبلغ</b></td><td class="n"><b>${SAR(r.amount)}</b></td></tr>
+          <tr><td class="n"><b>التفاصيل</b></td><td class="n">${esc(r.sub)}</td></tr>
+          <tr><td class="n"><b>المرجع</b></td><td class="n">${esc(r.ref || "—")}</td></tr>
+          ${r.voided ? `<tr><td class="n"><b>الحالة</b></td><td class="n" style="color:#B3261E"><b>ملغى</b></td></tr>` : ""}
+        </tbody></table>
+        <div style="text-align:center;margin-top:12px">${imgs[i] && /^data:image\//.test(imgs[i]) ? `<img src="${imgs[i]}" style="max-width:100%;max-height:165mm;border:1px solid #ddd;border-radius:6px">` : `<p>الصورة غير موجودة</p>`}</div>`}));
+      fillPrintFin(w, title, pages);
+    } catch (e) { w.close(); handleWriteErr(e); }
+  };
+  if ($("#rcPrint")) $("#rcPrint").onclick = () => printList(list, f.who ? `إيصالات ${(studs.find(x => x[0] === f.who) || [, ""])[1]}` : `الإيصالات${f.m ? " · " + f.m : ""}`);
+  el.querySelectorAll("[data-rprint]").forEach(b => b.onclick = () => { const id = b.dataset.rprint.split(":")[1]; const r = list.find(x => x.id === id); printList([r], `إيصال · ${r.title}`); });
+}
+
 /* ---- expenses, partners, monthly report ---- */
 const EXP_CATS = ["إيجار", "كهرباء وماء وإنترنت", "تسويق وإعلان", "مستلزمات وقرطاسية", "صيانة", "رسوم حكومية", "رواتب إدارية", "أخرى"];
 const sumAmt = l => Math.round(l.reduce((a, x) => a + (Number(x.amount != null ? x.amount : x.net) || 0), 0) * 100) / 100;
@@ -2506,7 +2559,7 @@ function finExpenses(el){
   const byCat = {}; list.filter(x => !x.void).forEach(x => byCat[x.category] = (byCat[x.category] || 0) + Number(x.amount));
   el.innerHTML = `<div class="card"><h2>تسجيل مصروف</h2>
     <div class="row"><select id="exC" style="width:auto">${EXP_CATS.map(c => `<option>${c}</option>`).join("")}</select><input type="number" id="exA" min="0" step="0.01" placeholder="المبلغ" style="width:130px"><input type="date" id="exD" value="${today()}" max="${today()}" style="width:160px"><select id="exM2" style="width:auto">${["تحويل بنكي", "نقد", "مدى / شبكة"].map(x => `<option>${x}</option>`).join("")}</select></div>
-    <div class="row" style="margin-top:8px"><input type="text" id="exT" class="grow" placeholder="الوصف، مثل: إيجار شهر نوفمبر"></div>
+    <div class="row" style="margin-top:8px"><input type="text" id="exT" class="grow" placeholder="الوصف، مثل: إيجار شهر نوفمبر"><input type="text" id="exRef" placeholder="رقم الفاتورة أو المرجع" style="width:190px"></div>
     <div class="row" style="margin-top:8px"><label class="f grow" for="exImg">صورة الفاتورة أو الإيصال (اختياري)<input type="file" id="exImg" accept="image/*"></label><button class="btn gold" id="exAdd" style="align-self:flex-end">+ تسجيل</button></div></div>
   <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">مصروفات الشهر</h2><input type="month" id="expM" value="${esc(m)}" style="width:170px"></div>
     <p class="muted">المجموع <b>${SAR(sumAmt(list.filter(x => !x.void)))}</b>${Object.keys(byCat).length ? " · " + Object.entries(byCat).map(([k, v]) => `${esc(k)}: ${SAR(v)}`).join(" · ") : ""}</p>
@@ -2515,7 +2568,7 @@ function finExpenses(el){
   bindRcpt(el);
   $("#exAdd").onclick = async () => {
     const amount = Math.round((Number($("#exA").value) || 0) * 100) / 100; if (amount <= 0) return toast("اكتب المبلغ");
-    const d = {category: $("#exC").value, amount, date: $("#exD").value || today(), method: $("#exM2").value, desc: $("#exT").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
+    const d = {category: $("#exC").value, amount, date: $("#exD").value || today(), method: $("#exM2").value, desc: $("#exT").value.trim(), ref: $("#exRef").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
     let img = null; try { img = await pickedImg("#exImg"); } catch { return toast("الصورة كبيرة، صوّرها بدقة أقل"); }
     const id = "e-" + uid() + uid();
     try {
