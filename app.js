@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction, getCountFromServer } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
@@ -113,6 +113,8 @@ const S = {
 if (!configured) {
   $("#app").innerHTML = `<div class="notice err">البوابة تحتاج إعدادات Firebase في ملف config.js.</div>`;
 } else {
+  onSnapshot(ref("public/site"), snap => { S.site = snap.exists() ? snap.data() : {}; licQR(); if (!S.authUser && S.view === "home") render(); }, () => { S.site = {}; });
+  onSnapshot(ref("public/stats"), snap => { S.stats = snap.exists() ? snap.data() : null; if (!S.authUser && S.view === "home") render(); }, () => {});
   onSnapshot(ref("public/survey"), snap => { S.survey = snap.exists() ? snap.data() : null; if (S.role === "student" && !busyEditing()) render(); }, () => {});
   S.verify = (new URLSearchParams(location.search).get("verify") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 20) || null;
   onSnapshot(ref("public/system"), snap => { S.sys = snap.exists() ? snap.data() : {}; render(); }, () => { S.sys = {}; render(); });
@@ -196,6 +198,7 @@ function afterData(){
   if (S._loginLog && S.loaded.trainers) { S._loginLog = false; logAction("تسجيل دخول", ""); }
   if (S.role === "admin") syncTrainerNumbers();
   if (SEES_FIN()) syncFinClear();
+  if (S.role === "admin" && !RO() && !FIN()) syncPublicStats();
   if (S.view === "trainer" && S.tGroup && !S.groups[S.tGroup]) { S.tGroup = null; stopAtt(); }
   if (S.view === "admin" && $("#modal").classList.contains("on") && S._modalGroup) renderModalStudents();
   if (busyEditing()) return;
@@ -206,7 +209,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","evL","evD","accN","licU","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -262,9 +265,25 @@ function renderTop(){
 function go(v){ S.view = v; render(); window.scrollTo(0, 0); }
 
 /* ---------- render root ---------- */
+function renderFab(){
+  let box = $("#waFab");
+  const list = waList(S.site), show = list.length > 0 && (!S.authUser || S.role === "student") && !S.verify;
+  if (!show) { if (box) box.remove(); return; }
+  if (!box) { box = document.createElement("div"); box.id = "waFab"; box.className = "waWrap"; document.body.appendChild(box); }
+  const sig = JSON.stringify(list); if (box.dataset.sig === sig) return; box.dataset.sig = sig;
+  if (list.length === 1) {
+    box.innerHTML = `<a class="waFab" href="${esc(socialUrl("whatsapp", list[0].num))}" target="_blank" rel="noopener" aria-label="تواصل معنا على واتساب" title="${esc(list[0].label || "واتساب")}">${ICON.whatsapp}</a>`;
+    return;
+  }
+  box.innerHTML = `<div class="waMenu" id="waMenu" hidden>${list.map(w => `<a href="${esc(socialUrl("whatsapp", w.num))}" target="_blank" rel="noopener">${ICON.whatsapp}<span>${esc(w.label || "واتساب")}</span></a>`).join("")}</div>
+    <button class="waFab" id="waBtn" aria-label="تواصل معنا على واتساب" aria-expanded="false" aria-controls="waMenu">${ICON.whatsapp}</button>`;
+  const btn = box.querySelector("#waBtn"), menu = box.querySelector("#waMenu");
+  btn.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute("aria-expanded", String(!menu.hidden)); };
+  document.addEventListener("click", ev => { if (!box.contains(ev.target)) { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); } });
+}
 function render(){
   if (!configured) return;
-  renderTop();
+  renderTop(); renderFab();
   const app = $("#app");
   if (S.verify) { $("#topSub").textContent = "التحقق من الشهادات"; return renderVerify(app); }
   if (!S.authReady || !S.sys) { app.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
@@ -287,15 +306,203 @@ function render(){
   return renderTrainer(app);
 }
 
+
+/* ---------- home page: content and helpers ---------- */
+const dayOfYear = () => { const [y, m, d] = today().split("-").map(Number); return Math.floor((Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 0)) / 864e5); };
+const QUOTES = [
+  "كل محاضرة تحضرها خطوة أقرب لهدفك.",
+  "التعلّم استثمار ما يخسر أبداً.",
+  "المهارة تُبنى بالتكرار، والتميّز يُبنى بالالتزام.",
+  "خطوة صغيرة كل يوم، تصنع فرق كبير آخر الفصل.",
+  "النجاح ما هو صدفة، هو حضور والتزام كل يوم.",
+  "المعرفة اللي تتعلمها اليوم، تفتح لك باب بكرة.",
+  "اللي يتعلّم باستمرار، ما يوقف عن التقدّم.",
+  "الانضباط جسر بين أهدافك وإنجازاتك.",
+  "كل خبير كان في يوم مبتدئ ما استسلم.",
+  "اسأل، وجرّب، وتعلّم من الخطأ؛ هذي طريق الإتقان.",
+  "وقتك في التدريب يصنع فرقك في سوق العمل.",
+  "التزامك اليوم شهادتك بكرة.",
+  "الطموح يبدأ بقرار، ويكتمل بالمثابرة.",
+  "كل يوم فرصة جديدة تتعلّم فيها شي جديد.",
+  "القانون يحمي الحقوق، والمعرفة تحمي صاحبها.",
+  "اجعل فضولك أكبر من خوفك من الغلط.",
+  "الإتقان ما يجي مرة وحدة، يجي محاضرة بعد محاضرة.",
+  "استثمر في نفسك، فهي المشروع اللي ما يخسر.",
+  "اللي يحضر بانتظام، يحصد بثقة.",
+  "التطوير المهني رحلة، وأنت الحين على الطريق الصح."
+];
+
+/* TVTC training calendar 1448-1449, split-semester system (النظام النصفي المجزأ), Gregorian dates as printed */
+const TVTC_1448 = {
+  holidays: [
+    {from: "2026-09-23", to: "2026-09-24", label: "إجازة اليوم الوطني"},
+    {from: "2026-10-25", to: "2026-10-25", label: "إجازة مطوّلة"},
+    {from: "2026-11-22", to: "2026-11-26", label: "إجازة الخريف"},
+    {from: "2026-11-29", to: "2026-11-29", label: "إجازة مطوّلة"},
+    {from: "2027-01-07", to: "2027-01-16", label: "إجازة منتصف العام التدريبي"},
+    {from: "2027-02-21", to: "2027-02-22", label: "إجازة يوم التأسيس"},
+    {from: "2027-02-26", to: "2027-03-13", label: "إجازة عيد الفطر"},
+    {from: "2027-04-11", to: "2027-04-11", label: "إجازة مطوّلة"},
+    {from: "2027-05-07", to: "2027-05-22", label: "إجازة عيد الأضحى"}
+  ],
+  events: [
+    ["2026-07-19", "بداية تسجيل المستجدين وطلبات التجسير واستعادة القيد، وبداية تسجيل المقررات"],
+    ["2026-08-20", "نهاية تسجيل المستجدين وطلبات التجسير"],
+    ["2026-08-23", "بداية التدريب، ونهاية تسجيل المقررات وطلبات التحويل"],
+    ["2026-09-06", "آخر موعد لحذف المقررات"],
+    ["2026-09-20", "آخر فترة للانسحاب، وبداية تسجيل المستجدين للجزء الثاني"],
+    ["2026-10-18", "بداية الاختبارات وتسجيل النتائج، وبداية تسجيل المقررات"],
+    ["2026-10-22", "نهاية الفترة التدريبية ونهاية تسجيل النتائج"],
+    ["2026-11-01", "بداية التدريب، ونهاية تسجيل المقررات وطلبات التحويل"],
+    ["2026-11-15", "آخر موعد لحذف المقررات"],
+    ["2026-12-06", "آخر فترة للانسحاب، وبداية تسجيل المستجدين وطلبات التجسير واستعادة القيد"],
+    ["2027-01-03", "بداية الاختبارات وتسجيل النتائج، وبداية تسجيل المقررات"],
+    ["2027-01-06", "نهاية تسجيل النتائج ونهاية الفترة التدريبية"],
+    ["2027-01-14", "نهاية تسجيل المستجدين وطلبات التجسير"],
+    ["2027-01-17", "بداية التدريب، ونهاية تسجيل المقررات ورفع الجداول وطلبات التحويل"],
+    ["2027-01-31", "آخر موعد لحذف المقررات"],
+    ["2027-02-14", "آخر فترة للانسحاب، وبداية تسجيل المستجدين للجزء الثاني"],
+    ["2027-03-28", "بداية الاختبارات وتسجيل النتائج، وبداية تسجيل المقررات"],
+    ["2027-04-01", "نهاية الفترة التدريبية ونهاية تسجيل النتائج"],
+    ["2027-04-12", "بداية التدريب، ونهاية تسجيل المقررات وطلبات التحويل"],
+    ["2027-04-26", "آخر موعد لحذف المقررات"],
+    ["2027-05-02", "بداية تسجيل المستجدين للفصل الصيفي وطلبات التجسير واستعادة القيد"],
+    ["2027-05-24", "آخر فترة للانسحاب"],
+    ["2027-06-20", "بداية الاختبارات وتسجيل النتائج، وبداية تسجيل المقررات"],
+    ["2027-06-24", "نهاية الفترة التدريبية وتسجيل النتائج، وبداية إجازة نهاية العام التدريبي"],
+    ["2027-06-27", "بداية التدريب للفصل الصيفي، ونهاية تسجيل المقررات وطلبات التحويل"],
+    ["2027-07-11", "الفصل الصيفي: آخر موعد لحذف المقررات"],
+    ["2027-07-25", "الفصل الصيفي: آخر فترة للانسحاب، وبداية تسجيل المستجدين"],
+    ["2027-08-15", "الفصل الصيفي: بداية الاختبارات وتسجيل النتائج"],
+    ["2027-08-19", "الفصل الصيفي: نهاية تسجيل النتائج والفترة التدريبية"]
+  ].map(([date, label]) => ({date, label}))
+};
+/* QR that points at the institute's official license page on the TVTC site */
+async function licQR(){
+  const url = S.site && S.site.licUrl; if (!url || !/^https:\/\//.test(url)) return "";
+  if (S._licQR && S._licQRurl === url) return S._licQR;
+  try { const qrcode = await loadQR(); const q = qrcode(0, "M"); q.addData(url); q.make(); S._licQR = q.createSvgTag({cellSize: 3, margin: 0}); S._licQRurl = url; return S._licQR; } catch { return ""; }
+}
+/* upcoming holidays (they also stop attendance) and academic-calendar events (they don't), nearest first */
+function upcomingCal(){
+  const t = today(), [y1, m1, d1] = t.split("-").map(Number), base = Date.UTC(y1, m1 - 1, d1);
+  const days = d => { const [y, m, dd] = d.split("-").map(Number); return Math.max(0, Math.round((Date.UTC(y, m - 1, dd) - base) / 864e5)); };
+  const hol = ((S.sys && S.sys.holidays) || []).filter(h => (h.to || h.from) >= t).map(h => ({label: h.label || "إجازة", from: h.from, to: h.to, hol: true}));
+  const ev = ((S.sys && S.sys.events) || []).filter(e => e.date >= t).map(e => ({label: e.label, from: e.date}));
+  return [...hol, ...ev].sort((a, b) => a.from.localeCompare(b.from) || (b.hol ? 1 : 0) - (a.hol ? 1 : 0)).map(u => ({...u, days: days(u.from < t ? t : u.from)}));
+}
+function nextHoliday(){
+  const t = today(), list = ((S.sys && S.sys.holidays) || []).filter(h => (h.to || h.from) >= t).sort((a, b) => a.from.localeCompare(b.from));
+  const h = list[0]; if (!h) return null;
+  const [y1, m1, d1] = t.split("-").map(Number), [y2, m2, d2] = h.from.split("-").map(Number);
+  return {...h, days: Math.max(0, Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 864e5))};
+}
+const waList = site => ((site && site.whatsapps) || (site && site.whatsapp ? [{label: "واتساب", num: site.whatsapp}] : [])).filter(x => x && x.num);
+const SOCIAL = [["maps", "موقعنا (رابط خرائط Google)"], ["whatsapp", "واتساب"], ["website", "الموقع"], ["x", "إكس"], ["instagram", "إنستغرام"], ["snapchat", "سناب شات"], ["tiktok", "تيك توك"], ["linkedin", "لينكدإن"]];
+function socialUrl(k, v){
+  v = String(v || "").trim(); if (/^https:\/\//i.test(v)) return v;
+  if (k === "maps") return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(v)}`;
+  const u = v.replace(/^@/, "");
+  return {whatsapp: `https://wa.me/${normPhone(v)}`, website: `https://${u.replace(/^https?:\/\//i, "")}`, x: `https://x.com/${u}`, instagram: `https://instagram.com/${u}`, snapchat: `https://snapchat.com/add/${u}`, tiktok: `https://tiktok.com/@${u}`, linkedin: `https://linkedin.com/company/${u}`}[k] || "#";
+}
+const svgI = (body, cls = "ico") => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICON = {
+  maps: svgI(`<path d="M12 21s-7-6.2-7-11.5a7 7 0 0114 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>`),
+  clock: svgI(`<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`),
+  news: svgI(`<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/>`),
+  help: svgI(`<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 015 0c0 1.7-2.5 2-2.5 4M12 17v.01"/>`),
+  student: svgI(`<path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/><path d="M22 9v6"/>`, "pico"),
+  trainer: svgI(`<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M7 20l3-4M17 20l-3-4M7 9h6M7 12h9"/>`, "pico"),
+  admin: svgI(`<path d="M12 3v18M5 7h14"/><path d="M5 7l-3 6a3 3 0 006 0zM19 7l-3 6a3 3 0 006 0z"/><path d="M8 21h8"/>`, "pico"),
+  seal: svgI(`<circle cx="12" cy="9" r="6"/><path d="M9.5 9l1.8 1.8L15 7.5"/><path d="M8.5 14l-1.5 7 5-3 5 3-1.5-7"/>`),
+  cal: svgI(`<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>`),
+  whatsapp: svgI(`<path d="M4 20l1.3-3.8A8 8 0 1112 20a8 8 0 01-4.2-1.2z"/><path d="M9 9c0 3 3 6 6 6l1-1.5-2-1-1 1c-1-.5-2-1.5-2.5-2.5l1-1-1-2z"/>`),
+  website: svgI(`<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>`),
+  x: svgI(`<path d="M4 4l16 16M20 4L4 20"/>`),
+  instagram: svgI(`<rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r=".6" fill="currentColor"/>`),
+  snapchat: svgI(`<path d="M12 3c3 0 5 2.2 5 5.5v2l2 1-2 1.2c-.5 1.8-2 3-2 3l3 1.3-3 .8-1 1.7c-1-.4-2-.5-2-.5s-1 .1-2 .5l-1-1.7-3-.8 3-1.3s-1.5-1.2-2-3L5 11.5l2-1v-2C7 5.2 9 3 12 3z"/>`),
+  tiktok: svgI(`<path d="M14 3v11.5a3.5 3.5 0 11-3.5-3.5"/><path d="M14 3c.5 2.5 2.5 4.5 5 4.5"/>`),
+  linkedin: svgI(`<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 10v7M8 7v.01M12 17v-4a2 2 0 014 0v4M12 10v7"/>`)
+};
+
+const cdCells = ms => { const s = Math.max(0, Math.floor(ms / 1000)), parts = [[Math.floor(s / 86400), "يوم"], [Math.floor(s % 86400 / 3600), "ساعة"], [Math.floor(s % 3600 / 60), "دقيقة"], [s % 60, "ثانية"]]; return parts.map(([v, l]) => `<div><b>${String(v).padStart(2, "0")}</b><span>${l}</span></div>`).join(""); };
+const DEFAULT_FAQ = [
+  {q: "نسيت رمز الدخول، وش أسوي؟", a: "تواصل مع الشؤون الأكاديمية، ويعطونك رمز جديد على طول."},
+  {q: "كيف أرفع عذر غياب؟", a: "من بوابة الطلاب، افتح «الأعذار»، واختر المحاضرة، واكتب السبب، وأرفق صورة العذر."},
+  {q: "وين ألقى رابط المحاضرة عن بُعد والتسجيلات؟", a: "في بوابة الطلاب، الصفحة الرئيسية، تحت كل مقرر."},
+  {q: "متى تظهر درجاتي؟", a: "بعد ما يرفعها المدرب وتعتمدها الشؤون الأكاديمية، وتظهر لك في الصفحة الرئيسية."},
+  {q: "كيف أعرف رسومي والمبلغ المتبقي علي؟", a: "من بوابة الطلاب، افتح «المالية»، وتشوف جدول الدفعات وتقدر تطبع سنداتك."},
+  {q: "كيف أثبّت البوابة على جوالي؟", a: "اضغط «تثبيت التطبيق» في الشريط الأخضر فوق. على الآيفون: من Safari اضغط زر المشاركة، ثم «إضافة إلى الشاشة الرئيسية»."}
+];
+/* staff keep the public counters on the home page fresh (no names, counts only) */
+async function syncPublicStats(){
+  if (S._statsDone || !S.loaded.groups || !S.loaded.trainers || !Object.keys(S.students || {}).length) return;
+  S._statsDone = true;
+  try {
+    const lectures = (await getCountFromServer(collection(db, "att"))).data().count;
+    const d = {students: Object.keys(S.students).length, trainers: Object.keys(S.trainers).length, groups: Object.keys(S.groups).length, lectures, at: today()};
+    const cur = S.stats || {};
+    if (["students", "trainers", "groups", "lectures"].some(k => cur[k] !== d[k])) await setDoc(ref("public/stats"), d);
+  } catch (e) { console.warn("stats", e); }
+}
+
 /* ---------- home & logins ---------- */
 function renderHome(app){
+  const site = S.site || {}, st = S.stats, upcoming = upcomingCal();
+  const h = Number(new Intl.DateTimeFormat("en-GB", {timeZone: TZ, hour: "numeric", hourCycle: "h23"}).format(new Date()));
+  const greet = h < 12 ? "صباح الخير" : "مساء الخير";
+  const links = SOCIAL.filter(([k]) => site[k] && k !== "maps" && k !== "whatsapp");
+  const was = waList(site);
+  const news = (site.news || []).filter(n => n.title && (!n.until || n.until >= today())).sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 4);
+  const faq = (site.faq || DEFAULT_FAQ).filter(f => f.q && f.a);
+  const cdT = site.countdown && site.countdown.at ? Date.parse(site.countdown.at + ":00+03:00") : NaN;
+  const cd = cdT > Date.now() && site.countdown.label ? {label: site.countdown.label, t: cdT} : null;
+  const counters = st ? [["students", "متدرب ومتدربة"], ["lectures", "محاضرة منعقدة"]].filter(([k]) => st[k] > 0) : [];
   app.innerHTML = `${S.disabledMsg ? `<div class="notice err">حسابك موقوف مؤقتاً. تواصل مع الشؤون الأكاديمية.</div>` : ""}
-  <div class="card"><h2>اختر البوابة</h2><p class="muted" style="margin:0">اليوم ${esc(fmtDate(today()))}</p></div>
+  <section class="hero rise">
+    <img class="heroLogo" src="logo-mark.png" alt="">
+    <div class="heroTxt">
+      <span class="greet">${greet}</span>
+      <h2>${esc(INST_AR)}</h2>
+      <span class="heroEn">${esc(INST_EN)}</span>
+      ${site.accNo ? `<span class="accNo">${ICON.seal} مرخّص من المؤسسة العامة للتدريب التقني والمهني · رقم الرخصة ${esc(site.accNo)}</span>` : ""}
+      <span class="heroDate">${esc(hijri(today()))} · ${esc(greg(today()))}</span>
+    </div>
+  </section>
+  ${cd ? `<section class="countdown rise" style="--d:1"><span class="cdLbl">${ICON.clock} باقي على ${esc(cd.label)}</span><div class="cdBox" id="cdBox" data-at="${cd.t}">${cdCells(cd.t - Date.now())}</div></section>` : ""}
   <div class="portals">
-    <button class="portal t" id="goS"><b>بوابة الطلاب</b></button>
-    <button class="portal t" id="goT"><b>بوابة المدربين</b></button>
-    <button class="portal" id="goA"><b>بوابة الشؤون المالية والأكاديمية</b></button>
-  </div>`;
+    <button class="portal pS rise" style="--d:1" id="goS">${ICON.student}<b>بوابة الطلاب</b></button>
+    <button class="portal pT rise" style="--d:2" id="goT">${ICON.trainer}<b>بوابة المدربين</b></button>
+    <button class="portal pA rise" style="--d:3" id="goA">${ICON.admin}<b>بوابة الشؤون المالية والأكاديمية</b></button>
+  </div>
+  ${counters.length ? `<section class="counters rise" style="--d:4">${counters.map(([k, l]) => `<div class="ctr"><b data-count="${Number(st[k])}">0</b><span>${l}</span></div>`).join("")}</section>` : ""}
+  <div class="duo">
+    <form class="card rise" style="--d:5" id="verF"><h2>${ICON.seal} تحقق من شهادة</h2>
+      <p class="muted" style="margin-top:0">اكتب رمز التحقق المطبوع على الشهادة.</p>
+      <div class="row"><input type="text" id="verC" class="grow" dir="ltr" placeholder="مثل AB12CD34" autocomplete="off" aria-label="رمز التحقق"><button class="btn pri" type="submit">تحقق</button></div></form>
+    <div class="card rise" style="--d:6"><h2>${ICON.cal} القادم في التقويم</h2>
+      ${upcoming.length ? `<div class="upc">${upcoming.slice(0, 4).map(u => `<div class="upI ${u.hol ? "hol" : ""}"><span class="upD">${u.days === 0 ? "اليوم" : u.days === 1 ? "بكرة" : `بعد ${u.days} ${u.days <= 10 ? "أيام" : "يوم"}`}</span><b>${esc(u.label)}</b><span class="muted">${esc(fmtDate(u.from))}${u.to && u.to !== u.from ? " ← " + esc(fmtDate(u.to)) : ""}</span></div>`).join("")}</div>
+        ${upcoming.length > 4 ? `<details class="upMore"><summary>التقويم كامل (${upcoming.length})</summary><div class="upc">${upcoming.slice(4).map(u => `<div class="upI ${u.hol ? "hol" : ""}"><b>${esc(u.label)}</b><span class="muted">${esc(fmtDate(u.from))}${u.to && u.to !== u.from ? " ← " + esc(fmtDate(u.to)) : ""}</span></div>`).join("")}</div></details>` : ""}` : `<p class="muted" style="margin:0">ما فيه مواعيد قادمة مسجّلة.</p>`}</div>
+  </div>
+  ${site.licUrl && /^https:\/\//.test(site.licUrl) ? `<section class="card licCard rise" style="--d:7"><div class="licQR" id="licQR"></div><div class="grow"><h2>${ICON.seal} ترخيص المعهد</h2><p class="muted" style="margin:0 0 10px">امسح الرمز أو اضغط الزر للتحقق من ترخيص المعهد وبرامجه التدريبية المعتمدة في موقع المؤسسة العامة للتدريب التقني والمهني.</p>${site.accNo ? `<p style="margin:0 0 10px">رقم الرخصة: <b dir="ltr">${esc(site.accNo)}</b></p>` : ""}<a class="btn pri sm" href="${esc(site.licUrl)}" target="_blank" rel="noopener">التحقق من الترخيص</a></div></section>` : ""}
+  ${news.length ? `<section class="rise" style="--d:7"><h3 class="secT">${ICON.news} آخر الأخبار</h3><div class="news">${news.map(n => `<article class="nItem"><span class="nDate">${esc(fmtDate(n.date))}</span><b>${esc(n.title)}</b>${n.text ? `<p>${esc(n.text)}</p>` : ""}</article>`).join("")}</div></section>` : ""}
+  <blockquote class="quote rise" style="--d:8">${esc(QUOTES[dayOfYear() % QUOTES.length])}</blockquote>
+  ${faq.length ? `<section class="card rise" style="--d:9"><h2>${ICON.help} أسئلة شائعة</h2><div class="faq">${faq.map(f => `<details><summary>${esc(f.q)}</summary><p>${esc(f.a)}</p></details>`).join("")}</div></section>` : ""}
+  <footer class="foot rise" style="--d:9"><img src="logo-mark.png" alt=""><span>${esc(INST_AR)}</span>
+    ${was.length ? `<div class="waRow">${was.map(w => `<a class="mapBtn" href="${esc(socialUrl("whatsapp", w.num))}" target="_blank" rel="noopener">${ICON.whatsapp} ${esc(w.label || "واتساب")}</a>`).join("")}</div>` : ""}
+    ${site.maps ? `<a class="mapBtn" href="${esc(socialUrl("maps", site.maps))}" target="_blank" rel="noopener">${ICON.maps} موقعنا على الخريطة</a>` : ""}
+    ${links.length ? `<div class="soc">${links.map(([k, label]) => `<a href="${esc(socialUrl(k, site[k]))}" target="_blank" rel="noopener" aria-label="${label}" title="${label}">${ICON[k] || label}</a>`).join("")}</div>` : ""}</footer>`;
+  if ($("#licQR")) licQR().then(svg => { if (svg && $("#licQR")) $("#licQR").innerHTML = svg; });
+  clearInterval(S._cdTimer);
+  if ($("#cdBox")) S._cdTimer = setInterval(() => { const b = $("#cdBox"); if (!b) return clearInterval(S._cdTimer); const left = Number(b.dataset.at) - Date.now(); if (left <= 0) { clearInterval(S._cdTimer); return render(); } b.innerHTML = cdCells(left); }, 1000);
+  $("#verF").onsubmit = e => { e.preventDefault(); const c = $("#verC").value.toUpperCase().replace(/[^A-Z0-9]/g, ""); if (!c) return toast("اكتب رمز التحقق"); location.href = `${SITE()}?verify=${c}`; };
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  app.querySelectorAll("[data-count]").forEach(n => {
+    const to = Number(n.dataset.count); if (reduce) { n.textContent = to.toLocaleString("en-US"); return; }
+    const t0 = performance.now(), dur = 1200;
+    const step = t => { const k = Math.min(1, (t - t0) / dur), v = Math.round(to * (1 - Math.pow(1 - k, 3))); n.textContent = v.toLocaleString("en-US"); if (k < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
   $("#goS").onclick = () => go("studentLogin");
   $("#goT").onclick = () => go("trainerLogin");
   $("#goA").onclick = () => go("adminLogin");
@@ -911,6 +1118,7 @@ const PRINT_CSS = `
 .hd{display:flex;align-items:center;gap:12px;border-bottom:2px solid #C9A54C;padding-bottom:10px;margin-bottom:14px}
 .hd img{width:58px;height:58px;object-fit:contain}.hd .t{flex:1}.hd b{display:block;font-size:15px;color:#1F5136}.hd span{font-size:10.5px;color:#8a6d22;letter-spacing:.3px}
 .hd .meta{font-size:11px;text-align:left;color:#555}
+.hd .licq svg{width:52px;height:52px;display:block}
 h1{font-size:19px;color:#1F5136;text-align:center;margin:6px 0 14px}
 table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #c9d2cc;padding:5px 6px;text-align:center}
 th{background:#1F5136;color:#fff;font-weight:600}td.n{text-align:right}tr:nth-child(even) td{background:#f6f8f6}
@@ -928,7 +1136,7 @@ th{background:#1F5136;color:#fff;font-weight:600}td.n{text-align:right}tr:nth-ch
 const fillPrintFin = (w, title, pages, land) => fillPrint(w, title, pages, land, "المالية");
 function fillPrint(w, title, pages, land, dept){
   if (!w) return;
-  const head = `<header class="hd"><img src="${SITE()}logo-mark.png" alt=""><div class="t"><b>${INST_AR}</b><span>${INST_EN}</span></div><div class="meta">${esc(dept || "الشؤون الأكاديمية")}<br>${esc(bothDates(today()))}</div></header>`;
+  const head = `<header class="hd"><img src="${SITE()}logo-mark.png" alt=""><div class="t"><b>${INST_AR}</b><span>${INST_EN}</span></div><div class="meta">${esc(dept || "الشؤون الأكاديمية")}<br>${esc(bothDates(today()))}${S.site && S.site.accNo ? `<br>رقم الرخصة: ${esc(S.site.accNo)}` : ""}</div>${S._licQR && S.site && S.site.licUrl === S._licQRurl ? `<div class="licq">${S._licQR}</div>` : ""}</header>`;
   w.document.open();
   w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${esc(title)}</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -1760,6 +1968,10 @@ function adminMessages(el){
 }
 
 /* ---------- system tab ---------- */
+async function saveSite(patch, label){
+  try { await setDoc(ref("public/site"), patch, {merge: true}); S.site = {...(S.site || {}), ...patch}; logAction("الصفحة الرئيسية", label); toast("انحفظ"); render(); }
+  catch (e) { handleWriteErr(e); }
+}
 function adminSystem(el){
   const sys = S.sys || {};
   const annRows = k => liveAnnAll(k).map((a, i) => `<div class="item" style="padding:8px 12px"><span class="grow">${esc(a.text)}<div class="muted">${AUD[k]}${a.expires ? " · ينتهي " + esc(a.expires) : " · بدون انتهاء"}</div></span><button class="btn sm danger" data-adel="${k}:${i}">حذف</button></div>`).join("");
@@ -1783,6 +1995,31 @@ function adminSystem(el){
       ${sys.maintenance ? `<button class="btn pri" id="mOff">إيقاف الصيانة وفتح الموقع</button>` : `<button class="btn danger" id="mOn">تشغيل وضع الصيانة</button>`}
       <button class="btn sm" id="mSaveMsg">حفظ الرسالة</button>
     </div>
+  </div>
+  <div class="card"><h2>الصفحة الرئيسية</h2>
+    <p class="muted" style="margin-top:0">اللي تكتبه هنا يظهر لأي أحد يفتح البوابة. الخانة الفاضية ما تظهر.</p>
+    <h3>ترخيص المعهد</h3>
+    <div class="row"><label class="f grow" for="accN">رقم الرخصة<input type="text" id="accN" dir="ltr" value="${esc((S.site || {}).accNo || "")}" placeholder="رقم الرخصة من المؤسسة العامة للتدريب التقني والمهني"></label>
+      <label class="f grow" for="licU">رابط التحقق (من باركود الرخصة)<input type="url" id="licU" dir="ltr" value="${esc((S.site || {}).licUrl || "")}" placeholder="https://pt-web.tvtc.gov.sa/..."></label>
+      <button class="btn pri sm" id="accSave" style="align-self:flex-end">حفظ</button></div>
+    <p class="muted">رقم الرخصة والباركود يظهرون في الصفحة الرئيسية وعلى كل المطبوعات. الباركود يفتح صفحة الرخصة الرسمية في موقع المؤسسة.</p>
+    <h3 style="margin-top:16px">أرقام الواتساب</h3>
+    <div class="list" id="waL">${(S._waEdit || waList(S.site)).map((w, i) => `<div class="item" style="padding:8px 12px"><input type="text" data-wal="${i}" value="${esc(w.label || "")}" placeholder="القسم، مثل: القبول والتسجيل" class="grow"><input type="tel" data-wan="${i}" dir="ltr" value="${esc(w.num || "")}" placeholder="05xxxxxxxx" style="width:160px"><button class="btn sm danger" data-wadel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه أرقام</span>`}</div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" id="waAdd">+ رقم</button><button class="btn pri sm" id="waSave">حفظ الأرقام</button></div>
+    <h3 style="margin-top:16px">الروابط</h3>
+    <div class="row">${SOCIAL.filter(([k]) => k !== "whatsapp").map(([k, l]) => `<label class="f" for="so-${k}" style="flex:1;min-width:150px">${l}<input type="text" id="so-${k}" dir="ltr" value="${esc((S.site || {})[k] || "")}" placeholder="${k === "whatsapp" ? "05xxxxxxxx" : k === "website" ? "example.com" : k === "maps" ? "https://maps.app.goo.gl/..." : "@account"}"></label>`).join("")}</div>
+    <div class="row" style="margin-top:8px"><button class="btn pri sm" id="siteSave">حفظ الروابط</button><span class="muted">عدد المتدربين والمحاضرات يتحدث تلقائي.</span></div>
+    <h3 style="margin-top:16px">العدّاد التنازلي</h3>
+    <div class="row"><input type="text" id="cdL" class="grow" placeholder="مثل: بداية الفصل الثاني" value="${esc(((S.site || {}).countdown || {}).label || "")}"><input type="datetime-local" id="cdA" value="${esc(((S.site || {}).countdown || {}).at || "")}" style="width:220px" aria-label="موعد العدّاد"><button class="btn pri sm" id="cdSave">حفظ</button>${((S.site || {}).countdown || {}).label ? `<button class="btn sm danger" id="cdDel">إيقاف</button>` : ""}</div>
+    <p class="muted">يختفي لحاله بعد ما يمر الموعد. الوقت بتوقيت الرياض.</p>
+    <h3 style="margin-top:16px">آخر الأخبار</h3>
+    <div class="list">${((S.site || {}).news || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).map(n => `<div class="item" style="padding:8px 12px"><div class="grow"><b>${esc(n.title)}</b><div class="muted">${esc(n.date)}${n.until ? " · يختفي بعد " + esc(n.until) : ""}${n.until && n.until < today() ? " · <b>منتهي</b>" : ""}</div></div><button class="btn sm danger" data-ndel="${esc(n.id)}">حذف</button></div>`).join("") || `<span class="muted">ما فيه أخبار</span>`}</div>
+    <div class="row" style="margin-top:8px"><input type="text" id="nwT" class="grow" placeholder="عنوان الخبر" maxlength="90"><input type="date" id="nwU" style="width:170px" aria-label="يختفي بعد"></div>
+    <div class="row" style="margin-top:8px"><input type="text" id="nwX" class="grow" placeholder="تفاصيل قصيرة (اختياري)" maxlength="240"><button class="btn gold sm" id="nwAdd">+ إضافة خبر</button></div>
+    <p class="muted">تاريخ «يختفي بعد» اختياري. يظهر آخر 4 أخبار.</p>
+    <h3 style="margin-top:16px">الأسئلة الشائعة</h3>
+    <div class="list" id="fqL">${((S.site || {}).faq || DEFAULT_FAQ).map((f, i) => `<div class="item" style="padding:8px 12px;align-items:flex-start"><div class="grow" style="display:grid;gap:6px"><input type="text" data-fq="${i}" value="${esc(f.q)}" placeholder="السؤال"><textarea data-fa="${i}" style="min-height:50px" placeholder="الجواب">${esc(f.a)}</textarea></div><button class="btn sm danger" data-fdel="${i}">حذف</button></div>`).join("")}</div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" id="fqAdd">+ سؤال</button><button class="btn pri sm" id="fqSave">حفظ الأسئلة</button></div>
   </div>
   <div class="card"><h2>الشهادات والمالية</h2>
     <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
@@ -1812,6 +2049,13 @@ function adminSystem(el){
       <label class="muted" for="hTo">إلى</label><input type="date" id="hTo" style="width:160px">
       <button class="btn gold sm" id="hAdd">+ إضافة</button>
     </div>
+  </div>
+  <div class="card"><h2>التقويم الأكاديمي</h2>
+    <p class="muted" style="margin-top:0">مواعيد مثل بداية التدريب والاختبارات وتسجيل المقررات. تظهر في «القادم في التقويم» بالصفحة الرئيسية، وما تأثر على الحضور.</p>
+    <div class="row" style="margin-bottom:10px"><button class="btn gold sm" id="tvtcImp">إضافة تقويم المؤسسة 1448-1449 (النصفي المجزأ)</button><span class="muted">يضيف ${TVTC_1448.events.length} موعد و${TVTC_1448.holidays.length} إجازات، وما يكرر الموجود.</span></div>
+    <details><summary class="muted" style="cursor:pointer">المواعيد (${((sys.events) || []).length})</summary>
+    <div class="list" style="margin-top:8px">${((sys.events) || []).map((e, i) => `<div class="item" style="padding:8px 12px"><span class="grow">${esc(e.label)}<div class="muted">${dH(e.date)}</div></span><button class="btn sm danger" data-evdel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه مواعيد</span>`}</div></details>
+    <div class="row" style="margin-top:8px"><input type="text" id="evL" class="grow" placeholder="مثل: بداية الاختبارات النهائية"><input type="date" id="evD" style="width:160px" aria-label="التاريخ"><button class="btn gold sm" id="evAdd">+ إضافة</button></div>
   </div>
   <div class="card"><h2>الإعلانات</h2>
     <p class="muted" style="margin-top:0">تظهر شريط أعلى الموقع، وتختفي تلقائياً بعد تاريخ الانتهاء.</p>
@@ -1843,6 +2087,42 @@ function adminSystem(el){
   $("#mSaveMsg").onclick = () => saveSys({maintenanceMsg: $("#mMsg").value.trim()}, "تعديل رسالة الصيانة");
   if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
   if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
+  $("#siteSave").onclick = async () => {
+    const d = {};
+    SOCIAL.filter(([k]) => k !== "whatsapp").forEach(([k]) => d[k] = $("#so-" + k).value.trim().slice(0, 120));
+    saveSite(d, "تعديل روابط التواصل");
+  };
+  $("#accSave").onclick = () => {
+    const u = $("#licU").value.trim();
+    if (u && !/^https:\/\/[^/]*tvtc\.gov\.sa\//i.test(u)) return toast("رابط التحقق لازم يكون من موقع المؤسسة (tvtc.gov.sa)");
+    saveSite({accNo: $("#accN").value.trim().slice(0, 40), licUrl: u.slice(0, 300)}, "ترخيص المعهد");
+  };
+  const readWa = () => [...el.querySelectorAll("[data-wan]")].map(x => ({label: el.querySelector(`[data-wal="${x.dataset.wan}"]`).value.trim().slice(0, 40), num: x.value.trim()}));
+  $("#waAdd").onclick = () => { S._waEdit = [...readWa(), {label: "", num: ""}]; render(); };
+  el.querySelectorAll("[data-wadel]").forEach(b => b.onclick = () => { const l = readWa(); l.splice(Number(b.dataset.wadel), 1); S._waEdit = l; render(); });
+  $("#waSave").onclick = () => {
+    const l = readWa().filter(w => w.num);
+    const bad = l.find(w => !/^9665\d{8}$/.test(normPhone(w.num))); if (bad) return toast(`رقم غير صحيح: ${bad.num}`);
+    S._waEdit = null; saveSite({whatsapps: l.map(w => ({label: w.label || "واتساب", num: w.num})).slice(0, 8), whatsapp: ""}, "أرقام الواتساب");
+  };
+  $("#cdSave").onclick = () => { const label = $("#cdL").value.trim(), at = $("#cdA").value; if (!label || !at) return toast("اكتب اسم المناسبة وموعدها"); saveSite({countdown: {label, at}}, "العدّاد التنازلي: " + label); };
+  if ($("#cdDel")) $("#cdDel").onclick = () => saveSite({countdown: {label: "", at: ""}}, "إيقاف العدّاد");
+  $("#nwAdd").onclick = () => { const title = $("#nwT").value.trim(); if (!title) return toast("اكتب عنوان الخبر"); saveSite({news: [...((S.site || {}).news || []), {id: "n-" + uid(), title, text: $("#nwX").value.trim(), date: today(), until: $("#nwU").value || ""}].slice(-30)}, "خبر جديد: " + title); };
+  el.querySelectorAll("[data-ndel]").forEach(b => b.onclick = () => saveSite({news: ((S.site || {}).news || []).filter(n => n.id !== b.dataset.ndel)}, "حذف خبر"));
+  const readFaq = () => [...el.querySelectorAll("[data-fq]")].map(x => ({q: x.value.trim(), a: el.querySelector(`[data-fa="${x.dataset.fq}"]`).value.trim()}));
+  $("#fqSave").onclick = () => saveSite({faq: readFaq().filter(f => f.q && f.a).slice(0, 20)}, "الأسئلة الشائعة");
+  $("#fqAdd").onclick = () => { S.site = {...(S.site || {}), faq: [...readFaq(), {q: "", a: ""}]}; render(); };
+  el.querySelectorAll("[data-fdel]").forEach(b => b.onclick = () => { const l = readFaq(); l.splice(Number(b.dataset.fdel), 1); saveSite({faq: l.filter(f => f.q && f.a)}, "حذف سؤال"); });
+  $("#tvtcImp").onclick = () => {
+    const hs = [...((S.sys && S.sys.holidays) || [])], es = [...((S.sys && S.sys.events) || [])];
+    let nh = 0, ne = 0;
+    TVTC_1448.holidays.forEach(h => { if (!hs.some(x => x.from === h.from && (x.to || x.from) === h.to)) { hs.push(h); nh++; } });
+    TVTC_1448.events.forEach(e => { if (!es.some(x => x.date === e.date && x.label === e.label)) { es.push(e); ne++; } });
+    if (!nh && !ne) return toast("التقويم مضاف من قبل");
+    saveSys({holidays: hs.sort((a, b) => a.from.localeCompare(b.from)), events: es.sort((a, b) => a.date.localeCompare(b.date))}, `تقويم المؤسسة: ${ne} موعد و${nh} إجازة`);
+  };
+  $("#evAdd").onclick = () => { const label = $("#evL").value.trim(), date = $("#evD").value; if (!label || !date) return toast("اكتب الموعد وتاريخه"); saveSys({events: [...((S.sys && S.sys.events) || []), {date, label}].sort((a, b) => a.date.localeCompare(b.date))}, "موعد: " + label); };
+  el.querySelectorAll("[data-evdel]").forEach(b => b.onclick = () => { const l = [...((S.sys && S.sys.events) || [])]; l.splice(Number(b.dataset.evdel), 1); saveSys({events: l}, "حذف موعد"); });
   $("#lockSave").onclick = () => {
     const v = $("#lockH").value.trim();
     if (v !== "" && !(Number(v) >= 0)) return toast("اكتب عدد ساعات صحيح");
