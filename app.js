@@ -208,9 +208,9 @@ function renderHome(app){
   app.innerHTML = `
   <div class="card"><h2>اختر البوابة</h2><p class="muted" style="margin:0">اليوم ${esc(fmtDate(today()))}</p></div>
   <div class="portals">
-    <button class="portal t" id="goS"><b>بوابة الطلاب</b><span class="muted">ادخل برقمك الأكاديمي ورمزك، وشوف جدولك وحضورك ودرجاتك المعتمدة.</span></button>
-    <button class="portal t" id="goT"><b>بوابة المدربين</b><span class="muted">ادخل برقمك ورمزك، وحضّر طلابك وارصد الدرجات.</span></button>
-    <button class="portal" id="goA"><b>بوابة الشؤون الأكاديمية</b><span class="muted">المدربون والطلاب والمقررات، واعتماد الدرجات والتقارير.</span></button>
+    <button class="portal t" id="goS"><b>بوابة الطلاب</b></button>
+    <button class="portal t" id="goT"><b>بوابة المدربين</b></button>
+    <button class="portal" id="goA"><b>بوابة الشؤون الأكاديمية</b></button>
   </div>`;
   $("#goS").onclick = () => go("studentLogin");
   $("#goT").onclick = () => go("trainerLogin");
