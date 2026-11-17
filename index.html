@@ -162,6 +162,7 @@ tr:nth-child(even) td{background:#FAFBFA}
 .faq summary{cursor:pointer;font-weight:600;color:var(--green)}.faq p{margin:8px 0 0;color:var(--ink);font-size:14px}
 .waWrap{position:fixed;bottom:18px;left:18px;z-index:25;display:grid;gap:8px;justify-items:end}
 .waMenu{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:6px;display:grid;min-width:200px}
+.waMenu[hidden]{display:none}
 .waMenu a{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;color:var(--ink);text-decoration:none;font-weight:600}
 .waMenu a:hover{background:var(--bg)}.waMenu .ico{color:#1F8F4E}
 .waRow{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
@@ -179,6 +180,9 @@ tr:nth-child(even) td{background:#FAFBFA}
 .pmWrap{position:relative;max-height:62vh;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}.pmWrap img#pmImg{width:100%;display:block;cursor:crosshair}
 .pmMark{position:absolute;transform:translate(-50%,-50%);pointer-events:none}
 .pdfPos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:420px}
+.policy section{margin-top:14px}.policy h3{color:var(--green);font-size:16px;margin:0 0 6px}.policy ul{margin:0;padding-inline-start:20px;display:grid;gap:6px}.policy li,.policy p{line-height:1.85;margin:0}
+.polLink{color:var(--green);font-weight:600}
+[data-theme=dark] .policy h3,[data-theme=dark] .polLink{color:#8FD1A9}
 @media (max-width:600px){.portal{grid-template-columns:auto 1fr;align-items:center;padding:16px}.heroLogo{width:72px;height:72px}.hero{padding:22px 18px}.ctr b{font-size:26px}.cdBox div{min-width:58px}.cdBox b{font-size:20px}}
 @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion: reduce){.rise{animation:none}.portal:hover{transform:none}}
@@ -220,7 +224,7 @@ tr:nth-child(even) td{background:#FAFBFA}
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div class="box" id="modalBox"></div></div>
 <div class="toast" id="toast" role="status"></div>
 
-<script type="module" src="./app.js?v=43"></script>
+<script type="module" src="./app.js?v=46"></script>
 <script>
 (function(){
   var b = document.getElementById("themeBtn"), root = document.documentElement;

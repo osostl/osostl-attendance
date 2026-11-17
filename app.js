@@ -118,6 +118,7 @@ if (!configured) {
   onSnapshot(ref("public/site"), snap => { S.site = snap.exists() ? snap.data() : {}; licQR(); if (!S.authUser && S.view === "home") render(); }, () => { S.site = {}; });
   onSnapshot(ref("public/stats"), snap => { S.stats = snap.exists() ? snap.data() : null; if (!S.authUser && S.view === "home") render(); }, () => {});
   onSnapshot(ref("public/survey"), snap => { S.survey = snap.exists() ? snap.data() : null; if (S.role === "student" && !busyEditing()) render(); }, () => {});
+  S.policy = new URLSearchParams(location.search).has("policy");
   S.verify = (new URLSearchParams(location.search).get("verify") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 20) || null;
   onSnapshot(ref("public/system"), snap => { S.sys = snap.exists() ? snap.data() : {}; render(); }, () => { S.sys = {}; render(); });
   onSnapshot(ref("ann/all"), snap => { S.ann.all = (snap.exists() && snap.data().items) || []; renderAnn(); }, () => {});
@@ -135,6 +136,7 @@ if (!configured) {
       getDoc(ref("public/disabled")).then(snap => { if (snap.exists() && (snap.data().list || {})[myId]) { S.disabledMsg = true; signOut(auth); } }).catch(() => {});
     }
     startData();
+    setTimeout(() => { if (typeof Notification !== "undefined" && Notification.permission === "granted") enablePush(true); }, 2500);
     getDoc(ref("sigs/finance")).then(x => { S.sigs.finance = x.exists() ? x.data().img || "" : ""; }).catch(() => {});
     S._loginLog = S.role !== "student";
     render();
@@ -212,7 +214,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","vapK","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -247,6 +249,30 @@ function renderAnn(){
   bar.innerHTML = items.map(a => `<div class="notice" role="status"><b>إعلان${a.audience && a.audience !== "all" ? " · " + AUD[a.audience] : ""}:</b> ${esc(a.text)}</div>`).join("");
 }
 
+
+/* ---------- push notifications (sent by Cloud Functions; the portal only registers the device) ---------- */
+const pushId = t => t.replace(/[^\w:-]/g, "_").slice(0, 1400);
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const pushOn = () => pushSupported() && Notification.permission === "granted" && (() => { try { return localStorage.getItem("asasPush") === S.authUser.email; } catch { return false; } })();
+async function enablePush(silent){
+  if (!S.authUser) return;
+  if (!pushSupported()) { if (!silent) toast(isIOS() ? "على الآيفون: ثبّت البوابة على الشاشة الرئيسية من Safari أول، وافتحها من الأيقونة، وبعدها فعّل الإشعارات" : "متصفحك ما يدعم الإشعارات، جرّب Chrome"); return; }
+  const vapid = S.site && S.site.vapid;
+  if (!vapid) { if (!silent) toast("الإشعارات ما تفعّلت من إدارة المعهد للحين"); return; }
+  try {
+    if (Notification.permission !== "granted") { if (silent) return; const p = await Notification.requestPermission(); if (p !== "granted") return toast("ما سمحت بالإشعارات. تقدر تسمح لها من إعدادات المتصفح"); }
+    const reg = await navigator.serviceWorker.register("sw.js"); await navigator.serviceWorker.ready;
+    const M = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js");
+    if (!(await M.isSupported())) { if (!silent) toast("متصفحك ما يدعم الإشعارات"); return; }
+    const token = await M.getToken(M.getMessaging(app), {vapidKey: vapid, serviceWorkerRegistration: reg});
+    if (!token) return;
+    await setDoc(ref("pushTokens/" + pushId(token)), {token, email: S.authUser.email, role: S.role === "admin" ? S.adminRole : S.role, num: S.myNum || "", tid: S.role === "trainer" ? (S.me || "") : "", at: new Date().toISOString()});
+    try { localStorage.setItem("asasPush", S.authUser.email); } catch {}
+    if (!silent) { toast("تفعّلت الإشعارات ✓"); renderTop(); }
+  } catch (e) { console.error(e); if (!silent) toast("تعذّر تفعيل الإشعارات"); }
+}
+
 /* ---------- top bar ---------- */
 const trainerTitle = t => (t.gender === "f" ? "المدربة " : "المدرب ") + t.name;
 function renderTop(){
@@ -258,7 +284,8 @@ function renderTop(){
     if (S.role === "trainer" && S.trainers[S.me]) who = trainerTitle(S.trainers[S.me]);
     if (S.role === "admin") who = ROLES[S.adminRole];
     if (S.role === "student" && S.myStudent) who = S.myStudent.name;
-    w.innerHTML = `<span>${esc(who)}</span><button class="btn ghost sm" id="out">خروج</button>`;
+    w.innerHTML = `<span>${esc(who)}</span>${S.site && S.site.vapid && !pushOn() ? `<button class="btn ghost sm" id="pushBtn">تفعيل الإشعارات</button>` : ""}<button class="btn ghost sm" id="out">خروج</button>`;
+    if ($("#pushBtn")) $("#pushBtn").onclick = () => enablePush(false);
     $("#out").onclick = () => { S.view = "home"; signOut(auth); };
   } else if (S.view !== "home") {
     w.innerHTML = `<button class="btn ghost sm" id="homeBtn">الرئيسية</button>`;
@@ -284,11 +311,14 @@ function renderFab(){
   btn.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute("aria-expanded", String(!menu.hidden)); };
   document.addEventListener("click", ev => { if (!box.contains(ev.target)) { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); } });
 }
+document.addEventListener("click", e => { const a = e.target.closest && e.target.closest("[data-policy]"); if (!a) return; e.preventDefault(); S.policy = true; history.pushState(null, "", "?policy"); render(); window.scrollTo(0, 0); });
+window.addEventListener("popstate", () => { S.policy = new URLSearchParams(location.search).has("policy"); render(); });
 function render(){
   if (!configured) return;
   renderTop(); renderFab();
   const app = $("#app");
   if (S.verify) { $("#topSub").textContent = "التحقق من الشهادات"; return renderVerify(app); }
+  if (S.policy) return renderPolicy(app);
   if (!S.authReady || !S.sys) { app.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
   if (S.sys.maintenance && S.role !== "admin" && S.view !== "adminLogin") {
     app.innerHTML = `<div class="card" style="text-align:center;padding:36px 16px"><h2>الموقع تحت الصيانة</h2>
@@ -449,6 +479,83 @@ async function syncPublicStats(){
   } catch (e) { console.warn("stats", e); }
 }
 
+
+/* ---------- terms of use & privacy (public page: ?policy) ---------- */
+const POLICY_DATE = "2026-11-17";
+const POLICY = [
+  ["التعريف والنطاق", [
+    "هذه السياسة تنظّم استخدام البوابة الإلكترونية لمعهد أسس التقنية والقانون العالي للتدريب، وتشمل بوابة الطلاب، وبوابة المدربين، وبوابة الشؤون المالية والأكاديمية، وصفحة التحقق من الشهادات.",
+    "استخدامك للبوابة أو دخولك لحسابك يعني موافقتك على هذه السياسة."
+  ]],
+  ["الحسابات ورموز الدخول", [
+    "يصدر المعهد لكل متدرب رقماً تدريبياً ورمز دخول، ولكل مدرب رقماً ورمز دخول، ولكل موظف صفة ورمز دخول.",
+    "الرمز شخصي وسري، ولا يجوز مشاركته أو استخدام حساب شخص آخر. صاحب الحساب مسؤول عن كل ما يتم من خلاله.",
+    "إذا فقدت رمزك أو اشتبهت أن أحداً عرفه، تواصل مع الشؤون الأكاديمية لإصدار رمز جديد، ويتوقف الرمز القديم مباشرة.",
+    "للمعهد إيقاف أي حساب مؤقتاً أو نهائياً عند مخالفة هذه السياسة أو انتهاء علاقة صاحبه بالمعهد."
+  ]],
+  ["الاستخدام المقبول", [
+    "تُستخدم البوابة لأغراض التدريب والإدارة في المعهد فقط.",
+    "يُمنع: انتحال شخصية أي أحد، أو رفع مستندات أو صور غير صحيحة أو معدّلة، أو محاولة الوصول لبيانات أو صلاحيات لا تخصك، أو تعطيل البوابة، أو نشر محتوى مسيء.",
+    "يُمنع نسخ بيانات المتدربين أو المدربين أو نشرها خارج الغرض الذي أُتيحت له."
+  ]],
+  ["التحضير والسجلات", [
+    "يسجّل المدرب حضور المتدربين وانصرافهم، ويُقفل التعديل بعد مدة تحددها الإدارة من نهاية يوم المحاضرة.",
+    "تُحتسب نسب الغياب والإنذارات والحرمان وفق النسب المعتمدة في المعهد، ولا تُحتسب أيام الإجازات الرسمية.",
+    "كل عملية في البوابة (تحضير، تعديل، اعتماد، دفعة، إصدار شهادة…) تُسجَّل باسم من قام بها ووقتها، ويطّلع على السجل الإدارة فقط."
+  ]],
+  ["الأعذار والمستندات", [
+    "يرفع المتدرب عذر الغياب مع صورته، وتقرّر الشؤون الأكاديمية قبوله أو رفضه.",
+    "تقديم عذر أو مستند غير صحيح مخالفة يترتب عليها إجراءات نظامية وفق لوائح المعهد."
+  ]],
+  ["الدرجات والشهادات", [
+    "تظهر الدرجات للمتدرب بعد اعتمادها من الشؤون الأكاديمية.",
+    "تحمل كل شهادة رمز تحقق ورمز QR، ويحق لأي جهة التحقق منها عبر صفحة التحقق في البوابة.",
+    "للمعهد إلغاء أي شهادة صدرت بالخطأ أو بناءً على بيانات غير صحيحة، وتظهر عندها في صفحة التحقق بأنها ملغاة.",
+    "التوقيعات والختم الإلكتروني على المستندات خاصة بالمعهد، ولا يجوز نسخها أو استخدامها خارج البوابة."
+  ]],
+  ["الرسوم والمدفوعات", [
+    "تُسجَّل الرسوم والدفعات وطرق السداد في حساب المتدرب، ويستطيع الاطلاع على جدول دفعاته وطباعة سنداته من بوابته.",
+    "سند القبض الصادر من البوابة سند داخلي، وليس فاتورة ضريبية.",
+    "الدفعة المسجّلة بالخطأ لا تُحذف، وإنما تُلغى مع ذكر السبب، ويبقى أثرها في السجل.",
+    "قد يُشترط سداد الرسوم كاملة لإصدار الشهادة، حسب ما تقرره إدارة المعهد."
+  ]],
+  ["البيانات الشخصية التي نجمعها", [
+    "بيانات التعريف: الاسم، والرقم التدريبي، والجنس، ورقم الهوية أو الإقامة، وتاريخ الميلاد، والجنسية، والمؤهل، والمدينة.",
+    "بيانات التواصل: جوال المتدرب، وجوال ولي الأمر، والبريد الإلكتروني.",
+    "بيانات التدريب: الحضور والغياب، والأعذار وصورها، والإنذارات، والدرجات، والتقييمات، والشهادات.",
+    "البيانات المالية: الرسوم، والخصومات، والدفعات، وصور إيصالات التحويل.",
+    "لا نطلب بيانات بطاقات بنكية، ولا نحفظ كلمات مرور أو صوراً شخصية."
+  ]],
+  ["الغرض من البيانات ومن يطّلع عليها", [
+    "تُستخدم البيانات لإدارة التدريب: التحضير، والمتابعة، والدرجات، والشهادات، والرسوم، والتواصل مع المتدرب أو ولي أمره، والتقارير المطلوبة نظاماً.",
+    "يطّلع كل مستخدم على ما يخص عمله فقط: المتدرب على بياناته، والمدرب على متدربي مقرراته، والشؤون الأكاديمية على البيانات التدريبية، والمالية على البيانات المالية، والإدارة على الكل.",
+    "لا يبيع المعهد البيانات ولا يشاركها مع جهات تسويقية. قد تُشارك مع الجهات الحكومية المختصة، مثل المؤسسة العامة للتدريب التقني والمهني، عندما يتطلب النظام ذلك.",
+    "تقييم المتدرب للمدرب واستبيان الرضا سريّان، ولا يطّلع المدرب على اسم من قيّمه."
+  ]],
+  ["حفظ البيانات وحمايتها", [
+    "تُحفظ البيانات في خدمات Google Firebase السحابية، ويُتحكم في الوصول إليها بقواعد صلاحيات لكل صفة.",
+    "يأخذ المعهد نسخاً احتياطية دورية، ويحفظها في مكان آمن.",
+    "تُحتفظ البيانات طوال علاقة المتدرب بالمعهد، ثم المدة التي يتطلبها النظام أو تقتضيها مصلحة المتدرب (مثل التحقق من الشهادات)."
+  ]],
+  ["حقوقك في بياناتك", [
+    "وفق نظام حماية البيانات الشخصية في المملكة العربية السعودية، لك الحق في العلم بكيفية جمع بياناتك والغرض منه، والاطلاع عليها والحصول على نسخة منها، وطلب تصحيح الخاطئ منها أو إكماله، وطلب إتلاف ما انتهت الحاجة إليه، في حدود ما يسمح به النظام.",
+    "لممارسة أي من هذه الحقوق أو للاستفسار، تواصل مع الشؤون الأكاديمية في المعهد."
+  ]],
+  ["تعديل السياسة", [
+    "قد يحدّث المعهد هذه السياسة عند الحاجة، ويُنشر التحديث في هذه الصفحة مع تاريخه. استمرارك في استخدام البوابة بعد التحديث يعني موافقتك عليه."
+  ]]
+];
+function renderPolicy(app){
+  $("#topSub").textContent = "سياسة الاستخدام والخصوصية";
+  app.innerHTML = `<article class="card policy"><h2>سياسة الاستخدام والخصوصية</h2>
+    <p class="muted" style="margin-top:0">${esc(INST_AR)} · آخر تحديث ${esc(bothDates(POLICY_DATE))}</p>
+    ${POLICY.map(([h, ps], i) => `<section><h3>${i + 1}. ${esc(h)}</h3>${ps.length > 1 ? `<ul>${ps.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : `<p>${esc(ps[0])}</p>`}</section>`).join("")}
+    <div class="row" style="margin-top:14px"><button class="btn sm" id="polBack">رجوع</button><button class="btn sm" id="polPrint">طباعة</button></div></article>`;
+  $("#polBack").onclick = () => { S.policy = false; history.replaceState(null, "", location.pathname); go(S.authUser ? (S.role || "home") : "home"); render(); };
+  $("#polPrint").onclick = () => { const w = openPrint(); fillPrint(w, "سياسة الاستخدام والخصوصية", [{html: `<h1>سياسة الاستخدام والخصوصية</h1><p style="text-align:center;color:#666">آخر تحديث ${esc(bothDates(POLICY_DATE))}</p>${POLICY.map(([h, ps], i) => `<h3 style="color:#1F5136">${i + 1}. ${esc(h)}</h3><ul style="line-height:1.9">${ps.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`).join("")}`}]); };
+}
+const policyLink = () => `<a href="?policy" data-policy class="polLink">سياسة الاستخدام والخصوصية</a>`;
+
 /* ---------- home & logins ---------- */
 function renderHome(app){
   const site = S.site || {}, st = S.stats, upcoming = upcomingCal();
@@ -491,7 +598,7 @@ function renderHome(app){
   ${news.length ? `<section class="rise" style="--d:7"><h3 class="secT">${ICON.news} آخر الأخبار</h3><div class="news">${news.map(n => `<article class="nItem"><span class="nDate">${esc(fmtDate(n.date))}</span><b>${esc(n.title)}</b>${n.text ? `<p>${esc(n.text)}</p>` : ""}</article>`).join("")}</div></section>` : ""}
   <blockquote class="quote rise" style="--d:8">${esc(QUOTES[dayOfYear() % QUOTES.length])}</blockquote>
   ${faq.length ? `<section class="card rise" style="--d:9"><h2>${ICON.help} أسئلة شائعة</h2><div class="faq">${faq.map(f => `<details><summary>${esc(f.q)}</summary><p>${esc(f.a)}</p></details>`).join("")}</div></section>` : ""}
-  <footer class="foot rise" style="--d:9"><img src="logo-mark.png" alt=""><span>${esc(INST_AR)}</span>
+  <footer class="foot rise" style="--d:9"><img src="logo-mark.png" alt=""><span>${esc(INST_AR)}</span>${policyLink()}
     ${was.length ? `<div class="waRow">${was.map(w => `<a class="mapBtn" href="${esc(socialUrl("whatsapp", w.num))}" target="_blank" rel="noopener">${ICON.whatsapp} ${esc(w.label || "واتساب")}</a>`).join("")}</div>` : ""}
     ${site.maps ? `<a class="mapBtn" href="${esc(socialUrl("maps", site.maps))}" target="_blank" rel="noopener">${ICON.maps} موقعنا على الخريطة</a>` : ""}
     ${links.length ? `<div class="soc">${links.map(([k, label]) => `<a href="${esc(socialUrl(k, site[k]))}" target="_blank" rel="noopener" aria-label="${label}" title="${label}">${ICON[k] || label}</a>`).join("")}</div>` : ""}</footer>`;
@@ -520,7 +627,8 @@ function loginErr(e){
 }
 function loginCard(title, fields, onSubmit){
   return `<div class="card" style="max-width:460px;width:100%;justify-self:center"><h2>${title}</h2>
-    <form id="lf" class="list" autocomplete="off">${fields}<div id="lerr"></div><button class="btn pri" type="submit" id="lb">دخول</button></form></div>`;
+    <form id="lf" class="list" autocomplete="off">${fields}<div id="lerr"></div><button class="btn pri" type="submit" id="lb">دخول</button></form>
+    <p class="muted" style="margin:10px 0 0;font-size:12.5px">بالدخول، أنت توافق على ${policyLink()}.</p></div>`;
 }
 async function doLogin(fn, back){
   $("#lb").disabled = true;
@@ -2125,6 +2233,10 @@ function adminSystem(el){
   </div>
   ${S.adminRole === "admin" ? sigCard("director", "توقيع مدير المعهد", "يظهر على الشهادات في خانة مدير المعهد.") + sigCard("stamp", "الختم الإلكتروني", "يظهر على الشهادات في خانة مدير المعهد، وعلى السندات والكشوف في خانة الختم.") : ""}
   ${S.adminRole === "academic" || S.adminRole === "admin" ? sigCard("academic", "توقيع مسؤول الشؤون الأكاديمية", "يظهر على الشهادات وكشوف الحضور والإنذارات في خانة الشؤون الأكاديمية.") : ""}
+  ${S.adminRole === "admin" ? `<div class="card"><h2>الإشعارات</h2>
+    <p class="muted" style="margin-top:0">إشعارات تلقائية على جوال المتدرب والمدرب: الغياب، والإنذارات، واعتماد الدرجات، وقرار العذر، والشهادات، والإعلانات، وتذكير الأقساط، ومواعيد التقويم، وتذكير المدرب إذا ما حضّر. كل واحد يفعّلها من زر «تفعيل الإشعارات» فوق بعد ما يدخل.</p>
+    <label class="f" for="vapK">مفتاح Web Push (من Firebase: إعدادات المشروع ← Cloud Messaging ← Web Push certificates)<input type="text" id="vapK" dir="ltr" value="${esc((S.site || {}).vapid || "")}" placeholder="BKx…"></label>
+    <div class="row" style="margin-top:8px"><button class="btn pri sm" id="vapSave">حفظ</button>${(S.site || {}).vapid ? `<button class="btn sm" id="pushTest">إرسال إشعار تجريبي لي</button>` : ""}</div></div>` : ""}
   <div class="card"><h2>الشهادات والمالية</h2>
     <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
     ${sys.certNeedsFee ? `<button class="btn sm" id="cfOff">إيقاف شرط السداد</button> <span class="pill p">شغّال</span>` : `<button class="btn pri sm" id="cfOn">اشتراط السداد لإصدار الشهادة</button>`}
@@ -2192,6 +2304,8 @@ function adminSystem(el){
   if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
   if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
   bindSigCards(el);
+  if ($("#vapSave")) $("#vapSave").onclick = () => { const v = $("#vapK").value.trim(); if (v && !/^[A-Za-z0-9_-]{60,120}$/.test(v)) return toast("المفتاح غير صحيح، انسخه كامل"); saveSite({vapid: v, portalUrl: SITE()}, "مفتاح الإشعارات"); };
+  if ($("#pushTest")) $("#pushTest").onclick = async () => { if (!pushOn()) { await enablePush(false); if (!pushOn()) return; } try { await setDoc(ref("pushTest/t-" + uid() + uid()), {email: S.authUser.email, at: new Date().toISOString()}); toast("انرسل طلب الإشعار، المفروض يوصلك خلال ثواني"); } catch (e) { handleWriteErr(e); } };
   $("#siteSave").onclick = async () => {
     const d = {};
     SOCIAL.filter(([k]) => k !== "whatsapp").forEach(([k]) => d[k] = $("#so-" + k).value.trim().slice(0, 120));
