@@ -5,11 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>بوابة تحضير معهد أسس</title>
 <link rel="icon" href="logo-mark.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1F5136">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="معهد أسس">
+<script>try{if(localStorage.getItem("asasTheme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}</script>
 <meta name="robots" content="noindex">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Reem+Kufi:wght@600;700&display=swap" rel="stylesheet">
 <style>
-/* Layout: a single green header band, then one working column of cards; trainer view is a roll-call list, admin view is tabs. Single light theme by choice. */
+/* Layout: a single green header band, then one working column of cards; trainer view is a roll-call list, admin view is tabs. Light theme by default, dark on request (toggle in the header). */
 :root{
   --green:#1F5136; --green-2:#2C6B4A; --gold:#C9A54C; --gold-pale:#FBF4E2;
   --ink:#1D2621; --muted:#5E6B64; --line:#DCE3DE; --bg:#F3F5F2; --card:#FFFFFF;
@@ -103,6 +109,22 @@ tr:nth-child(even) td{background:#FAFBFA}
 .empty{padding:22px;text-align:center;color:var(--muted)}
 @media (max-width:520px){.top h1{font-size:17px}.times input{width:104px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* dark theme: same layout, darker surfaces; print windows stay light */
+[data-theme=dark]{
+  --ink:#E4EAE6; --muted:#9EAEA5; --line:#2E3C35; --bg:#111915; --card:#18231E; --gold-pale:#2B2716;
+  --ok:#6FCF97; --ok-bg:#163223; --late:#E8C15A; --late-bg:#33290F; --abs:#F28B82; --abs-bg:#3A1C1A; --exc:#8AB4F8; --exc-bg:#172A42;
+  --green-2:#3D8A62; color-scheme: dark;
+}
+[data-theme=dark] .card h2,[data-theme=dark] .portal b,[data-theme=dark] .code{color:#8FD1A9}
+[data-theme=dark] .btn,[data-theme=dark] input,[data-theme=dark] select,[data-theme=dark] textarea,[data-theme=dark] .item,[data-theme=dark] .groupcard,[data-theme=dark] .stu,[data-theme=dark] .seg button,[data-theme=dark] .tbl,[data-theme=dark] .modal .box,[data-theme=dark] .chip{background:var(--card)}
+[data-theme=dark] .btn.pri{background:var(--green);color:#fff}
+[data-theme=dark] .btn.gold{background:var(--gold);color:#13241B}
+[data-theme=dark] .btn.ghost{background:transparent}
+[data-theme=dark] tr:nth-child(even) td{background:#1C2822}
+[data-theme=dark] .pill.f{background:#3A2030;color:#F0A8CB}[data-theme=dark] .pill.m{background:#1B2C3E;color:#9CC3EC}
+[data-theme=dark] .notice{border-color:#4A4122}
+[data-theme=dark] .notice.err{color:#F6C1BC;border-color:#5A2B27}
+[data-theme=dark] .card[style*="var(--bg)"]{background:#141E19!important}
 </style>
 </head>
 <body>
@@ -113,6 +135,8 @@ tr:nth-child(even) td{background:#FAFBFA}
     <div class="sub" id="topSub">بوابة الحضور والانصراف</div>
   </div>
   <div class="spacer"></div>
+  <button class="btn ghost sm" id="installBtn" hidden>تثبيت التطبيق</button>
+  <button class="btn ghost sm" id="themeBtn" aria-label="تبديل الوضع الليلي">الوضع الليلي</button>
   <div class="who" id="topWho"></div>
 </header>
 <main class="wrap" id="app">
@@ -121,6 +145,18 @@ tr:nth-child(even) td{background:#FAFBFA}
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div class="box" id="modalBox"></div></div>
 <div class="toast" id="toast" role="status"></div>
 
-<script type="module" src="./app.js?v=19"></script>
+<script type="module" src="./app.js?v=23"></script>
+<script>
+(function(){
+  var b = document.getElementById("themeBtn"), root = document.documentElement;
+  var label = function(){ b.textContent = root.dataset.theme === "dark" ? "الوضع الفاتح" : "الوضع الليلي"; };
+  label();
+  b.onclick = function(){ var d = root.dataset.theme === "dark" ? "" : "dark"; if (d) root.dataset.theme = d; else delete root.dataset.theme; try { localStorage.setItem("asasTheme", d); } catch(e){} label(); };
+  var ib = document.getElementById("installBtn"), deferred = null;
+  window.addEventListener("beforeinstallprompt", function(e){ e.preventDefault(); deferred = e; ib.hidden = false; });
+  ib.onclick = function(){ if (!deferred) return; deferred.prompt(); deferred.userChoice.finally(function(){ deferred = null; ib.hidden = true; }); };
+  if ("serviceWorker" in navigator) window.addEventListener("load", function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
+})();
+</script>
 </body>
 </html>

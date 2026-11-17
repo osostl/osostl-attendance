@@ -1,13 +1,15 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
 const DOMAIN = "osostl.local";                       // login emails are internal, never mailed
-const ROLE_EMAIL = {admin: "admin@" + DOMAIN, academic: "acadmic@" + DOMAIN, auditor: "audit@" + DOMAIN};
-const ROLES = {admin: "الإدارة", academic: "مسؤول الشؤون الأكاديمية", auditor: "جهة رقابية (قراءة فقط)"};
+const ROLE_EMAIL = {admin: "admin@" + DOMAIN, academic: "acadmic@" + DOMAIN, finance: "finance@" + DOMAIN, auditor: "audit@" + DOMAIN};
+const ROLES = {admin: "الإدارة", academic: "مسؤول الشؤون الأكاديمية", finance: "المالية", auditor: "جهة رقابية (قراءة فقط)"};
 const RO = () => S.adminRole === "auditor";
+const FIN = () => S.adminRole === "finance";
+const SEES_FIN = () => S.adminRole === "finance" || S.adminRole === "admin";
 const STATUS = {p: "حاضر", l: "متأخر", a: "غائب", e: "مستأذن"};
 const GENDER = {m: "طالب", f: "طالبة"};
 const GSTAT = {none: "لم تُرصد", draft: "مسودة عند المدرب", submitted: "بانتظار الاعتماد", returned: "معادة للمدرب", approved: "معتمدة ومنشورة"};
@@ -22,7 +24,10 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const today = () => new Date().toLocaleDateString("en-CA", {timeZone: TZ});
 const nowHM = () => new Date().toLocaleTimeString("en-GB", {timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false});
 const fmtTime = hm => { if (!hm) return "—"; let [h, m] = hm.split(":").map(Number); const s = h < 12 ? "ص" : "م"; h = h % 12 || 12; return `${h}:${String(m).padStart(2,"0")} ${s}`; };
-const fmtDate = d => { try { return new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-gregory-nu-latn", {weekday: "long", day: "numeric", month: "long"}); } catch { return d; } };
+const hijriShort = d => { try { return new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-islamic-umalqura-nu-latn", {day: "numeric", month: "long"}); } catch { return ""; } };
+const fmtDate = d => { try { return new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-gregory-nu-latn", {weekday: "long", day: "numeric", month: "long"}) + " · " + hijriShort(d); } catch { return d; } };
+/* a stored YYYY-MM-DD shown with its Hijri date beside it */
+const dH = d => { if (!/^\d{4}-\d{2}-\d{2}$/.test(d || "")) return esc(d || ""); try { return `${esc(d)} <span class="muted" style="font-size:12px">(${esc(new Date(d + "T12:00:00").toLocaleDateString("ar-SA-u-ca-islamic-umalqura-nu-latn", {day: "numeric", month: "numeric", year: "numeric"}))})</span>`; } catch { return esc(d); } };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const newCode = () => String(Math.floor(100000 + Math.random() * 900000));
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -108,6 +113,7 @@ const S = {
 if (!configured) {
   $("#app").innerHTML = `<div class="notice err">البوابة تحتاج إعدادات Firebase في ملف config.js.</div>`;
 } else {
+  onSnapshot(ref("public/survey"), snap => { S.survey = snap.exists() ? snap.data() : null; if (S.role === "student" && !busyEditing()) render(); }, () => {});
   S.verify = (new URLSearchParams(location.search).get("verify") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 20) || null;
   onSnapshot(ref("public/system"), snap => { S.sys = snap.exists() ? snap.data() : {}; render(); }, () => { S.sys = {}; render(); });
   onSnapshot(ref("ann/all"), snap => { S.ann.all = (snap.exists() && snap.data().items) || []; renderAnn(); }, () => {});
@@ -149,6 +155,8 @@ function startData(){
     S.subs.push(onSnapshot(query(collection(db, "results"), where("num", "==", S.myNum)), snap => { S.myResults = snap.docs.map(d => d.data()); render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "excuses"), where("num", "==", S.myNum)), snap => { S.myExc = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "warnings"), where("num", "==", S.myNum)), snap => { S.myWarn = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
+    S.subs.push(onSnapshot(ref("finAccounts/" + S.myNum), snap => { S.myFin = snap.exists() ? snap.data() : null; if (!busyEditing()) render(); }, () => {}));
+    S.subs.push(onSnapshot(query(collection(db, "payments"), where("num", "==", S.myNum)), snap => { S.myPay = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "certs"), where("num", "==", S.myNum)), snap => { S.myCerts = snap.docs.map(d => d.data()).filter(c => !c.revoked); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "evals"), where("num", "==", S.myNum)), snap => { S.myEvals = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
     return;
@@ -160,6 +168,12 @@ function startData(){
   S.subs.push(onSnapshot(collection(db, "grades"), snap => { S.grades = {}; snap.docs.forEach(d => S.grades[d.id] = d.data()); afterData(); }, () => {}));
   if (S.role === "admin") {
     S.subs.push(onSnapshot(ref("public/disabled"), snap => { S.disabled = (snap.exists() && snap.data().list) || {}; afterData(); }, () => {}));
+    if (SEES_FIN()) startFinance();
+    if (!RO()) S.subs.push(onSnapshot(collection(db, "finClear"), snap => { S.finClear = {}; snap.docs.forEach(d => S.finClear[d.id] = d.data()); S.finClearLoaded = true; afterData(); }, () => {}));
+    if (FIN()) {
+      S.subs.push(onSnapshot(collection(db, "students"), snap => { S.students = {}; snap.docs.forEach(d => S.students[d.id] = d.data()); afterData(); }, () => {}));
+      return;
+    }
     if (RO()) {
       S.subs.push(onSnapshot(collection(db, "students"), snap => { S.students = {}; snap.docs.forEach(d => S.students[d.id] = d.data()); afterData(); }, () => {}));
       S.subs.push(onSnapshot(collection(db, "warnings"), snap => { S.warnings = {}; snap.docs.forEach(d => S.warnings[d.id] = d.data()); afterData(); }, () => {}));
@@ -178,8 +192,10 @@ function fail(err){ console.error(err); $("#app").innerHTML = `<div class="notic
 function stopAll(){ S.subs.forEach(u => u()); S.subs = []; stopAtt(); stopAdminSubs(); S.trainers = {}; S.groups = {}; S.secrets = {}; S.students = {}; S.stSecrets = {}; S.grades = {}; S.myStudent = null; S.myAtt = []; S.myResults = []; S.myExc = []; S.myWarn = []; S.myEvals = []; S.excuses = []; S.warnings = {}; S.sTab = "home"; S._trainerSynced = false; S.ann.trainers = []; S.ann.students = []; renderAnn(); }
 
 function afterData(){
+  if (S._finModal && $("#modal").classList.contains("on") && S._finDraw && !busyEditing()) S._finDraw();
   if (S._loginLog && S.loaded.trainers) { S._loginLog = false; logAction("تسجيل دخول", ""); }
   if (S.role === "admin") syncTrainerNumbers();
+  if (SEES_FIN()) syncFinClear();
   if (S.view === "trainer" && S.tGroup && !S.groups[S.tGroup]) { S.tGroup = null; stopAtt(); }
   if (S.view === "admin" && $("#modal").classList.contains("on") && S._modalGroup) renderModalStudents();
   if (busyEditing()) return;
@@ -189,7 +205,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -359,7 +375,7 @@ const EXC_ST = {pending: "قيد المراجعة", accepted: "مقبول", reje
 const EXC_PILL = {pending: "l", accepted: "p", rejected: "a"};
 function studentTabs(){
   const open = Object.values(S.groups).filter(g => g.evalOpen && !(S.myEvals || []).some(e => e.groupId === g.id)).length;
-  const tabs = [["home", "الرئيسية"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")]];
+  const tabs = [["home", "الرئيسية"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ...(S.myFin ? [["fin", "المالية"]] : []), ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
   return `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${(S.sTab || "home") === k ? "on" : ""}" data-stab="${k}">${v}</button>`).join("")}</div></div>`;
 }
 function bindStudentTabs(app){ app.querySelectorAll("[data-stab]").forEach(b => b.onclick = () => { S.sTab = b.dataset.stab; render(); window.scrollTo(0, 0); }); }
@@ -373,7 +389,7 @@ function myCourseStats(){
 function renderStudent(app){
   const st = S.myStudent;
   if (!st) { app.innerHTML = `<div class="notice err">ما لقينا سجلك. تواصل مع الشؤون الأكاديمية.</div>`; return; }
-  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval})[S.sTab]($("#sb")); return; }
+  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFin, survey: studentSurvey})[S.sTab]($("#sb")); return; }
   const gs = Object.values(S.groups).sort((a,b) => (a.course||"").localeCompare(b.course||"","ar"));
   const res = {}; S.myResults.forEach(r => res[r.groupId] = r);
   const cards = gs.map(g => {
@@ -410,7 +426,7 @@ function renderStudent(app){
           <div class="muted" style="margin-top:4px">الحضور: ${c.rate === null ? "ما بدأ التحضير" : `${c.pres} من ${c.sessions} محاضرة (${c.rate}%)`}</div>
           ${c.rate === null ? "" : `<span class="bar" style="display:block;margin-top:6px;max-width:220px"><i style="width:${c.rate}%"></i></span>
           <div class="muted" style="margin-top:6px">الغياب: ${c.ab.a} (${c.ab.absPct}%) ${levelPill(c.ab)}${c.ab.remaining !== null ? ` · باقي لك ${c.ab.remaining} غياب قبل الحرمان` : ""}</div>`}
-          ${(c.g.recordings || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${c.g.recordings.length})</summary><div class="list" style="margin-top:6px">${c.g.recordings.filter(r => validLink(r.url)).map(r => `<a class="item" style="padding:8px 10px;text-decoration:none;color:inherit" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="grow">${esc(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></a>`).join("")}</div></details>` : ""}
+          ${(c.g.recordings || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${c.g.recordings.length})</summary><div class="list" style="margin-top:6px">${c.g.recordings.filter(r => validLink(r.url)).map(r => `<a class="item" style="padding:8px 10px;text-decoration:none;color:inherit" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></a>`).join("")}</div></details>` : ""}
           ${c.g.meetLink ? `<div style="margin-top:10px"><button class="btn sm ${c.live ? "gold" : ""}" data-join="${esc(c.g.id)}">${c.live ? "الآن · " : ""}دخول المحاضرة ${meetLabel(c.g.meetLink)}</button>${c.live ? ` <span class="muted">${fmtTime(c.live.from)} – ${fmtTime(c.live.to)}</span>` : ""}</div>` : ""}
         </div>
         <div style="text-align:center;min-width:92px">
@@ -529,6 +545,59 @@ function studentEval(el){
   });
 }
 
+
+/* ---------- end-of-program satisfaction survey ---------- */
+const SURVEY_Q = ["سهولة إجراءات التسجيل والقبول", "تعامل الشؤون الأكاديمية والإدارة", "مستوى المدربين بشكل عام", "مناسبة البرامج لسوق العمل", "القاعات والتجهيزات والمنصة الإلكترونية", "بوابة الطلاب وسهولة استخدامها", "رضاك العام عن المعهد"];
+const RECOMMEND = {yes: "أنصح فيه", maybe: "يمكن", no: "ما أنصح فيه"};
+function studentSurvey(el){
+  const sv = S.survey;
+  if (!sv || !sv.open) { el.innerHTML = `<div class="card empty">ما فيه استبيان مفتوح.</div>`; return; }
+  if (S.surveyDone === sv.id) { el.innerHTML = `<div class="card" style="text-align:center"><h2>شكراً لك</h2><p class="muted" style="margin:0">وصلنا رأيك، ويساعدنا نطوّر المعهد.</p></div>`; return; }
+  if (S.surveyChecked !== sv.id) {
+    S.surveyChecked = sv.id;
+    getDoc(ref(`surveys/${sv.id}_${S.myNum}`)).then(x => { if (x.exists()) { S.surveyDone = sv.id; render(); } }).catch(() => {});
+  }
+  const ans = S._svAns || (S._svAns = {});
+  el.innerHTML = `<form class="card" id="svF"><h2>${esc(sv.title || "استبيان رضا المتدربين")}</h2><p class="muted" style="margin-top:0">الاستبيان سري. من 1 (ضعيف) إلى 5 (ممتاز).</p>
+    ${SURVEY_Q.map((q, i) => `<div class="row" style="justify-content:space-between;margin-bottom:8px"><span>${q}</span><div class="seg" role="radiogroup" aria-label="${q}">${[1, 2, 3, 4, 5].map(n => `<button type="button" data-sq="${i}" data-v="${n}" style="${ans[i] === n ? "background:var(--green);color:#fff" : ""}">${n}</button>`).join("")}</div></div>`).join("")}
+    <div class="row" style="justify-content:space-between;margin:6px 0 10px"><span>تنصح أحد يسجّل في المعهد؟</span><div class="seg" role="radiogroup" aria-label="التوصية">${Object.entries(RECOMMEND).map(([k, v]) => `<button type="button" data-rec="${k}" style="${ans.rec === k ? "background:var(--green);color:#fff" : ""}">${v}</button>`).join("")}</div></div>
+    <label class="f" for="svC">وش أكثر شي عجبك؟ ووش نحسّن؟ (اختياري)<textarea id="svC" style="min-height:80px" maxlength="800"></textarea></label>
+    <button class="btn pri" type="submit" style="margin-top:8px">إرسال</button></form>`;
+  const paint = () => { el.querySelectorAll("[data-sq]").forEach(b => { const on = ans[b.dataset.sq] === Number(b.dataset.v); b.style.background = on ? "var(--green)" : ""; b.style.color = on ? "#fff" : ""; }); el.querySelectorAll("[data-rec]").forEach(b => { const on = ans.rec === b.dataset.rec; b.style.background = on ? "var(--green)" : ""; b.style.color = on ? "#fff" : ""; }); };
+  el.querySelectorAll("[data-sq]").forEach(b => b.onclick = () => { ans[b.dataset.sq] = Number(b.dataset.v); paint(); });
+  el.querySelectorAll("[data-rec]").forEach(b => b.onclick = () => { ans.rec = b.dataset.rec; paint(); });
+  $("#svF").onsubmit = async e => {
+    e.preventDefault();
+    if (SURVEY_Q.some((_, i) => !ans[i]) || !ans.rec) return toast("جاوب على كل الأسئلة");
+    try { await setDoc(ref(`surveys/${sv.id}_${S.myNum}`), {sid: sv.id, num: S.myNum, ratings: SURVEY_Q.map((_, i) => ans[i]), rec: ans.rec, comment: $("#svC").value.trim().slice(0, 800), at: new Date().toISOString()}); S.surveyDone = sv.id; S._svAns = null; render(); }
+    catch (er) { if (er && er.code === "permission-denied") { S.surveyDone = sv.id; render(); } else toast("تعذّر الإرسال"); }
+  };
+}
+function adminSurvey(){
+  const sv = S.survey || {};
+  const box = $("#svBox"); if (!box) return;
+  const list = S.surveyAll || [];
+  const ids = [...new Set(list.map(x => x.sid))];
+  const cur = S.svSel || sv.id || ids[0];
+  const l = list.filter(x => x.sid === cur);
+  const avg = i => l.length ? (l.reduce((a, x) => a + (x.ratings[i] || 0), 0) / l.length).toFixed(1) : "—";
+  const recC = k => l.filter(x => x.rec === k).length;
+  box.innerHTML = `<div class="card"><h2>استبيان رضا المتدربين (نهاية البرنامج)</h2>
+    <p class="muted" style="margin-top:0">سري. يظهر للطلاب تبويب «الاستبيان» لما يكون مفتوح.</p>
+    <div class="row"><input type="text" id="svT" class="grow" placeholder="عنوان الاستبيان، مثل: استبيان نهاية الفصل الأول 1448" value="${esc(sv.title || "")}">
+    ${sv.open ? `<span class="pill p">مفتوح</span>${RO() ? "" : `<button class="btn sm" id="svClose">قفل الاستبيان</button>`}` : RO() ? "" : `<button class="btn pri sm" id="svOpen">فتح استبيان جديد</button>`}</div>
+    ${ids.length > 1 ? `<label class="f" for="svSel" style="margin-top:8px">النتائج<select id="svSel">${ids.map(i => `<option value="${esc(i)}" ${i === cur ? "selected" : ""}>${esc((list.find(x => x.sid === i) || {}).title || i)}</option>`).join("")}</select></label>` : ""}
+    ${l.length ? `<p style="margin:10px 0 4px"><b>${l.length}</b> مشارك من ${Object.keys(S.students || {}).length} طالب · ينصحون: <b>${Math.round(recC("yes") / l.length * 100)}%</b> · يمكن ${recC("maybe")} · ما ينصحون ${recC("no")}</p>
+      <div class="tbl"><table><tbody>${SURVEY_Q.map((q, i) => `<tr><td class="nm">${q}</td><td><b>${avg(i)}</b></td><td style="width:40%"><span class="bar" style="display:block"><i style="width:${avg(i) === "—" ? 0 : avg(i) / 5 * 100}%"></i></span></td></tr>`).join("")}</tbody></table></div>
+      ${l.filter(x => x.comment).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">الملاحظات (${l.filter(x => x.comment).length})</summary><div class="list" style="margin-top:6px">${l.filter(x => x.comment).map(x => `<div class="item" style="padding:8px 12px">${esc(x.comment)}</div>`).join("")}</div></details>` : ""}
+      <div class="row" style="margin-top:8px"><button class="btn sm" id="svX">تنزيل Excel</button></div>` : `<p class="muted">ما وصلت ردود بعد.</p>`}</div>`;
+  const saveSv = (d, msg) => setDoc(ref("public/survey"), d, {merge: true}).then(() => { logAction(msg, d.title || ""); toast("انحفظ"); }).catch(handleWriteErr);
+  if ($("#svOpen")) $("#svOpen").onclick = () => { const title = $("#svT").value.trim() || "استبيان رضا المتدربين"; saveSv({id: "sv-" + today().replace(/-/g, "") + "-" + uid(), title, open: true}, "فتح استبيان الرضا"); };
+  if ($("#svClose")) $("#svClose").onclick = () => saveSv({open: false}, "قفل استبيان الرضا");
+  if ($("#svSel")) $("#svSel").onchange = e => { S.svSel = e.target.value; adminSurvey(); };
+  if ($("#svX")) $("#svX").onclick = () => excelDownload("استبيان الرضا", [{title: "الردود", rows: [[INST_AR], ["استبيان رضا المتدربين"], [], [...SURVEY_Q, "التوصية", "الملاحظة"], ...l.map(x => [...x.ratings, RECOMMEND[x.rec] || "", x.comment || ""]), [], [...SURVEY_Q.map((_, i) => Number(avg(i)) || 0), "المتوسط"]], widths: [...SURVEY_Q.map(() => 14), 12, 40]}]);
+}
+
 /* ---------- trainer portal ---------- */
 const myGroups = () => Object.values(S.groups).filter(g => g.trainerId === S.me).sort((a,b) => (a.course||"").localeCompare(b.course||"", "ar"));
 const countG = (g, gen) => (g.students||[]).filter(s => s.gender === gen).length;
@@ -606,7 +675,7 @@ function renderTrainer(app){
       ${validLink(g.meetLink) ? `<a class="btn sm pri" href="${esc(g.meetLink.trim())}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
     </div>
     <details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${(g.recordings || []).length})</summary>
-      <div class="list" style="margin-top:8px">${(g.recordings || []).map((r, i) => `<div class="item" style="padding:8px 10px"><span class="grow">${esc(r.date)} · ${esc(r.title)}</span><a class="btn sm" href="${esc(validLink(r.url) ? r.url : "#")}" target="_blank" rel="noopener">فتح</a><button class="btn sm danger" data-rrec="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه تسجيلات</span>`}</div>
+      <div class="list" style="margin-top:8px">${(g.recordings || []).map((r, i) => `<div class="item" style="padding:8px 10px"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><a class="btn sm" href="${esc(validLink(r.url) ? r.url : "#")}" target="_blank" rel="noopener">فتح</a><button class="btn sm danger" data-rrec="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه تسجيلات</span>`}</div>
       <div class="row" style="margin-top:8px">
         <input type="date" id="recD" value="${today()}" style="width:150px">
         <input type="text" id="recT" class="grow" placeholder="عنوان المحاضرة">
@@ -1047,19 +1116,22 @@ function writeGroup(gid, d){
 
 function renderAdmin(app){
   if (RO()) {
-    const tabsRO = [["dash", "لوحة اليوم"], ["follow", "المتابعة"], ["report", "التقارير"], ["archive", "الأرشيف"]];
+    const tabsRO = [["dash", "لوحة اليوم"], ["kpi", "المؤشرات"], ["follow", "المتابعة"], ["report", "التقارير"], ["archive", "الأرشيف"]];
     if (!tabsRO.some(([k]) => k === S.aTab)) S.aTab = "dash";
     app.innerHTML = `<div class="notice">حساب قراءة فقط: تقدر تشوف وتطبع وتصدّر، وما تقدر تعدّل شي.</div><div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabsRO.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}</button>`).join("")}</div></div><div id="ab"></div>`;
     app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
-    ({dash: adminDash, follow: adminFollow, report: adminReport, archive: adminArchive})[S.aTab]($("#ab"));
+    ({dash: adminDash, kpi: adminKpi, follow: adminFollow, report: adminReport, archive: adminArchive})[S.aTab]($("#ab"));
     if (RO()) app.querySelectorAll("#ab [data-issue], #issueAll, #cIssue, [data-rc], [data-twa], [data-wabs], [data-warn]").forEach(x => x.remove());
     return;
   }
-  const tabs = [["dash","لوحة اليوم"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["system","النظام"],["archive","الأرشيف"],["logs","السجل"]];
+  if (FIN()) {
+    app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
+  }
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية"]] : []),["archive","الأرشيف"],["logs","السجل"]];
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
-  ({dash: adminDash, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, evals: adminEvals, report: adminReport, system: adminSystem, archive: adminArchive, logs: adminLogs})[S.aTab]($("#ab"));
+  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, evals: adminEvals, report: adminReport, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
 }
 
 function adminDash(el){
@@ -1709,6 +1781,10 @@ function adminSystem(el){
       <button class="btn sm" id="mSaveMsg">حفظ الرسالة</button>
     </div>
   </div>
+  <div class="card"><h2>الشهادات والمالية</h2>
+    <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
+    ${sys.certNeedsFee ? `<button class="btn sm" id="cfOff">إيقاف شرط السداد</button> <span class="pill p">شغّال</span>` : `<button class="btn pri sm" id="cfOn">اشتراط السداد لإصدار الشهادة</button>`}
+  </div>
   <div class="card"><h2>قفل التحضير</h2>
     <p class="muted" style="margin-top:0">بعد نهاية يوم المحاضرة بعدد الساعات هذا، المدرب ما يقدر يعدّل التحضير. الإدارة تقدر تعدّل دائماً. فاضي = بدون قفل.</p>
     <div class="row"><input type="number" id="lockH" min="0" max="720" step="1" value="${typeof sys.lockHours === "number" && sys.lockHours >= 0 ? sys.lockHours : ""}" style="width:120px" placeholder="مثل 24"><span class="muted">ساعة</span><button class="btn pri sm" id="lockSave">حفظ</button></div>
@@ -1762,6 +1838,8 @@ function adminSystem(el){
   if ($("#mOn")) $("#mOn").onclick = () => { const b = $("#mOn"); if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟ يقفل الموقع على الكل"; return; } saveSys({maintenance: true, maintenanceMsg: $("#mMsg").value.trim()}, "تشغيل وضع الصيانة"); };
   if ($("#mOff")) $("#mOff").onclick = () => saveSys({maintenance: false}, "إيقاف وضع الصيانة");
   $("#mSaveMsg").onclick = () => saveSys({maintenanceMsg: $("#mMsg").value.trim()}, "تعديل رسالة الصيانة");
+  if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
+  if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
   $("#lockSave").onclick = () => {
     const v = $("#lockH").value.trim();
     if (v !== "" && !(Number(v) >= 0)) return toast("اكتب عدد ساعات صحيح");
@@ -1920,6 +1998,7 @@ function adminExcuses(el){
 function adminEvals(el){
   if (!S.evalsAll) {
     el.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري تحميل التقييمات…</p></div>`;
+    getDocs(collection(db, "surveys")).then(snap => { S.surveyAll = snap.docs.map(d => d.data()).map(x => ({...x, title: x.sid === (S.survey || {}).id ? S.survey.title : x.sid})); if (S.aTab === "evals") adminSurvey(); }).catch(() => {});
     getDocs(collection(db, "evals")).then(snap => { S.evalsAll = snap.docs.map(d => d.data()); if (S.aTab === "evals") render(); }).catch(e => { console.error(e); el.innerHTML = `<div class="notice err">تعذّر تحميل التقييمات، تأكد من تحديث قواعد Firebase.</div>`; });
     return;
   }
@@ -1933,7 +2012,60 @@ function adminEvals(el){
       ${l.length ? `<div class="tbl" style="margin-top:10px"><table><tbody>${EVAL_Q.map((q, i) => `<tr><td class="nm">${q}</td><td><b>${avg(l, i)}</b></td><td style="width:40%"><span class="bar" style="display:block"><i style="width:${avg(l, i) === "—" ? 0 : avg(l, i) / 5 * 100}%"></i></span></td></tr>`).join("")}</tbody></table></div>
       ${l.filter(e => e.comment).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">الملاحظات (${l.filter(e => e.comment).length})</summary><div class="list" style="margin-top:6px">${l.filter(e => e.comment).map(e => `<div class="item" style="padding:8px 12px">${esc(e.comment)}</div>`).join("")}</div></details>` : ""}` : `<p class="muted">ما وصلت تقييمات بعد.</p>`}
     </div>`; }).join("") || `<div class="card empty">ما فيه تقييمات مفتوحة. افتحها من "المقررات والطلاب".</div>`}`;
-  $("#evRef").onclick = () => { S.evalsAll = null; render(); };
+  el.insertAdjacentHTML("afterbegin", `<div id="svBox"></div>`); adminSurvey();
+  $("#evRef").onclick = () => { S.evalsAll = null; S.surveyAll = null; render(); };
+}
+
+
+/* ---------- indicators dashboard ---------- */
+function adminKpi(el){
+  if (!S.kpiAtt) {
+    el.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري حساب المؤشرات…</p></div>`;
+    Promise.all([getDocs(collection(db, "att")), S.evalsAll || RO() ? null : getDocs(collection(db, "evals")).catch(() => null)]).then(([a, e]) => {
+      S.kpiAtt = a.docs.map(d => d.data()); if (e) S.evalsAll = e.docs.map(d => d.data());
+      if (S.aTab === "kpi") render();
+    }).catch(err => { console.error(err); el.innerHTML = `<div class="notice err">تعذّر تحميل البيانات.</div>`; });
+    return;
+  }
+  const att = countable(S.kpiAtt), byG = {}; att.forEach(d => (byG[d.groupId] = byG[d.groupId] || []).push(d));
+  const groups = sortedGroups().map(g => {
+    const docs = byG[g.id] || [], st = (g.students || []).map(s => absStats(g, s.id, docs));
+    const withAtt = st.filter(x => x.attPct !== null);
+    const gd = S.grades[g.id] || {}, marks = gd.status === "approved" ? Object.values(gd.marks || {}).filter(x => typeof x === "number") : [];
+    const ev = (S.evalsAll || []).filter(e => e.groupId === g.id);
+    return {g, held: docs.length, n: st.length,
+      att: withAtt.length ? Math.round(withAtt.reduce((a, x) => a + x.attPct, 0) / withAtt.length) : null,
+      risk: st.filter(x => x.level === 1 || x.level === 2).length, deny: st.filter(x => x.level === 3).length,
+      pass: marks.length ? Math.round(marks.filter(x => x >= PASS).length / marks.length * 100) : null,
+      avgMark: marks.length ? Math.round(marks.reduce((a, x) => a + x, 0) / marks.length) : null,
+      ev: ev.length ? ev.reduce((a, e) => a + e.ratings.reduce((x, y) => x + y, 0) / e.ratings.length, 0) / ev.length : null};
+  });
+  const live = groups.filter(x => x.att !== null);
+  const overall = live.length ? Math.round(live.reduce((a, x) => a + x.att * x.n, 0) / Math.max(1, live.reduce((a, x) => a + x.n, 0))) : null;
+  const trainers = {}; groups.forEach(x => { const k = x.g.trainerId || "_"; (trainers[k] = trainers[k] || []).push(x); });
+  const avgOf = (l, k) => { const v = l.filter(x => x[k] !== null); return v.length ? v.reduce((a, x) => a + x[k], 0) / v.length : null; };
+  const months = {}; att.forEach(d => { const m = d.date.slice(0, 7); const o = months[m] = months[m] || {pr: 0, all: 0}; const g = S.groups[d.groupId]; (g ? g.students || [] : []).forEach(s => { o.all++; const r = d.rec && d.rec[s.id]; if (r && (r.st === "p" || r.st === "l")) o.pr++; }); });
+  const fin = SEES_FIN() && S.finAcc ? finRows().filter(r => r.acc) : null;
+  const finT = fin ? {net: fin.reduce((a, r) => a + r.st.net, 0), paid: fin.reduce((a, r) => a + r.st.paid, 0), over: fin.reduce((a, r) => a + r.st.overdue, 0), late: fin.filter(r => r.st.status === "late").length} : null;
+  const pctBar = v => v === null ? `<span class="muted">—</span>` : `<div class="row" style="gap:6px;flex-wrap:nowrap"><span class="bar" style="flex:1"><i style="width:${v}%;background:${v < 75 ? "var(--abs)" : v < 85 ? "#D9A400" : "var(--green-2)"}"></i></span><b>${v}%</b></div>`;
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">المؤشرات</h2><button class="btn sm" id="kRef">تحديث</button></div>
+    <div class="stats" style="margin-top:10px">
+      <div class="stat"><div class="n">${Object.keys(S.students || {}).length || groups.reduce((a, x) => a + x.n, 0)}</div><div class="l">متدرب</div></div>
+      <div class="stat"><div class="n">${groups.length}</div><div class="l">مقرر</div></div>
+      <div class="stat"><div class="n">${att.length}</div><div class="l">محاضرة منعقدة</div></div>
+      <div class="stat"><div class="n" style="color:${overall !== null && overall < 80 ? "var(--abs)" : "var(--green)"}">${overall === null ? "—" : overall + "%"}</div><div class="l">نسبة الحضور العامة</div></div>
+      <div class="stat"><div class="n">${groups.reduce((a, x) => a + x.risk, 0)}</div><div class="l">عليهم إنذار</div></div>
+      <div class="stat"><div class="n" style="color:var(--abs)">${groups.reduce((a, x) => a + x.deny, 0)}</div><div class="l">حرمان</div></div>
+      ${finT ? `<div class="stat"><div class="n">${finT.net ? Math.round(finT.paid / finT.net * 100) : 0}%</div><div class="l">نسبة التحصيل</div></div><div class="stat"><div class="n" style="color:var(--abs)">${SAR(finT.over)}</div><div class="l">متأخر السداد (${finT.late})</div></div>` : ""}
+    </div></div>
+  <div class="card"><h2>المقررات</h2><div class="tbl"><table><thead><tr><th class="nm">المقرر</th><th class="nm">المدرب/ة</th><th>المحاضرات</th><th style="min-width:150px">الحضور</th><th>إنذار</th><th>حرمان</th><th>النجاح</th><th>تقييم المدرب</th></tr></thead><tbody>
+    ${groups.map(x => `<tr><td class="nm">${esc(x.g.course)}</td><td class="nm">${esc(tName(x.g.trainerId))}</td><td>${x.held}</td><td>${pctBar(x.att)}</td><td>${x.risk || "—"}</td><td style="color:${x.deny ? "var(--abs)" : "inherit"}">${x.deny || "—"}</td><td>${x.pass === null ? "—" : x.pass + "%"}</td><td>${x.ev === null ? "—" : x.ev.toFixed(1) + " / 5"}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">ما فيه مقررات</td></tr>`}
+  </tbody></table></div><p class="muted">النجاح يظهر بعد اعتماد الدرجات. التقييم من استبيان تقييم المدرب.</p></div>
+  <div class="card"><h2>المدربين</h2><div class="tbl"><table><thead><tr><th class="nm">المدرب/ة</th><th>المقررات</th><th style="min-width:150px">متوسط الحضور</th><th>متوسط التقييم</th></tr></thead><tbody>
+    ${Object.entries(trainers).map(([k, l]) => { const a = avgOf(l, "att"), e = avgOf(l, "ev"); return `<tr><td class="nm">${esc(k === "_" ? "بدون مدرب" : tName(k))}</td><td>${l.length}</td><td>${pctBar(a === null ? null : Math.round(a))}</td><td>${e === null ? "—" : e.toFixed(1)}</td></tr>`; }).join("")}
+  </tbody></table></div></div>
+  <div class="card"><h2>الحضور حسب الشهر</h2>${Object.keys(months).length ? `<div class="list">${Object.entries(months).sort().map(([m, o]) => `<div class="item" style="padding:8px 12px"><span style="width:80px">${m}</span><span class="grow">${pctBar(o.all ? Math.round(o.pr / o.all * 100) : null)}</span></div>`).join("")}</div>` : `<p class="muted" style="margin:0">ما فيه تحضير بعد.</p>`}</div>`;
+  $("#kRef").onclick = () => { S.kpiAtt = null; render(); };
 }
 
 /* ---------- audit log tab ---------- */
@@ -1965,11 +2097,11 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear"];
 async function backupAll(note){
   const out = {kind: "asas-backup-v1", at: new Date().toISOString(), note: note || "", data: {}};
   for (const c of ALL_COLLS) {
-    const snap = await getDocs(collection(db, c));
+    let snap; try { snap = await getDocs(collection(db, c)); } catch { continue; }   // e.g. finance collections for the academic role
     out.data[c] = {}; snap.docs.forEach(d => { const v = d.data(); if (c === "logs" && v.at && v.at.toDate) v.at = v.at.toDate().toISOString(); out.data[c][d.id] = v; });
   }
   const blob = new Blob([JSON.stringify(out)], {type: "application/json"});
@@ -2028,6 +2160,461 @@ function adminArchive(el){
   if ($("#arX")) $("#arX").onclick = () => excelDownload(`أرشيف ${t}`, list.map(a => ({title: a.course, rows: [[INST_AR], [`${t} · ${a.course} · ${a.trainer}`], [], ["الاسم", "الرقم", "الحضور %", "غياب", "نسبة الغياب %", "الحالة", "الدرجة"], ...a.rows.map(r => [r.name, r.num, r.att, r.abs, r.absPct, r.level, r.mark])], widths: [30, 12, 10, 8, 12, 14, 8]})));
 }
 
+
+
+/* ================= fee clearance (read by academic affairs for certificates) ================= */
+function syncFinClear(){
+  if (S._fcBusy || !S.finAcc || !S.pays || !S.finClearLoaded) return;
+  const want = {};
+  Object.entries(S.finAcc).forEach(([num, acc]) => { want[num] = accStatus(acc, paysOf(num)).remaining; });
+  const b = writeBatch(db); let n = 0;
+  Object.entries(want).forEach(([num, rem]) => { const cur = (S.finClear || {})[num]; if (!cur || Math.abs((cur.remaining || 0) - rem) > 0.001) { b.set(ref("finClear/" + num), {remaining: rem}); n++; } });
+  Object.keys(S.finClear || {}).forEach(num => { if (!(num in want)) { b.delete(ref("finClear/" + num)); n++; } });
+  if (!n || n > 450) return;
+  S._fcBusy = true;
+  b.commit().catch(() => {}).finally(() => { S._fcBusy = false; });
+}
+
+/* ================= finance ================= */
+const PLANS = {full: "كامل المبلغ", half: "50% / 50%", monthly: "أقساط شهرية", qasima: "قسيمة بلس (تابي / تمارا)"};
+const METHODS = ["تحويل بنكي", "نقد", "مدى / شبكة", "قسيمة بلس"];
+const SAR = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US", {maximumFractionDigits: 2}) + " ر.س";
+const addMonths = (d, k) => { const [y, m, dd] = d.split("-").map(Number); const t = new Date(Date.UTC(y, m - 1 + k, 1)); const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate(); return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(Math.min(dd, last)).padStart(2, "0")}`; };
+function startFinance(){
+  S.subs.push(onSnapshot(ref("fin/settings"), snap => { S.finSet = snap.exists() ? snap.data() : {programs: []}; afterData(); }, () => {}));
+  S.subs.push(onSnapshot(collection(db, "finAccounts"), snap => { S.finAcc = {}; snap.docs.forEach(d => S.finAcc[d.id] = d.data()); afterData(); }, () => {}));
+  S.subs.push(onSnapshot(collection(db, "payments"), snap => { S.pays = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
+  S.subs.push(onSnapshot(collection(db, "expenses"), snap => { S.exps = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
+  S.subs.push(onSnapshot(collection(db, "commPays"), snap => { S.commPays = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
+  S.subs.push(onSnapshot(collection(db, "salaryPays"), snap => { S.salPays = {}; snap.docs.forEach(d => S.salPays[d.id] = d.data()); afterData(); }, () => {}));
+}
+function buildPlan(net, plan, start, months, second){
+  if (!net || !start) return [];
+  if (plan === "half") { const a = Math.round(net / 2 * 100) / 100; return [{due: start, amount: a}, {due: second || addMonths(start, 2), amount: Math.round((net - a) * 100) / 100}]; }
+  if (plan === "monthly") {
+    const n = Math.max(2, Math.min(24, Number(months) || 4)), a = Math.floor(net / n * 100) / 100;
+    return Array.from({length: n}, (_, i) => ({due: addMonths(start, i), amount: i === n - 1 ? Math.round((net - a * (n - 1)) * 100) / 100 : a}));
+  }
+  return [{due: start, amount: net}];
+}
+/* paid vs schedule: overdue = what fell due by today minus what was paid */
+function accStatus(acc, pays){
+  const extras = acc.extras || [];
+  const net = Math.round((Math.max(0, (Number(acc.fee) || 0) - (Number(acc.discount) || 0)) + extras.reduce((a, x) => a + (Number(x.amount) || 0), 0)) * 100) / 100;
+  const paid = pays.filter(p => !p.void).reduce((a, p) => a + (Number(p.amount) || 0), 0);
+  const inst = [...(acc.installments || []).map((x, ix) => ({...x, ix})), ...extras.map((x, xi) => ({due: x.date, amount: Number(x.amount) || 0, label: x.label, xi}))].sort((a, b) => a.due.localeCompare(b.due));
+  let cum = 0, dueNow = 0, next = null;
+  inst.forEach(i => { cum += Number(i.amount) || 0; if (i.due <= today()) dueNow = cum; else if (!next && cum > paid) next = i; });
+  const remaining = Math.max(0, Math.round((net - paid) * 100) / 100), overdue = Math.max(0, Math.round((dueNow - paid) * 100) / 100);
+  const status = !net ? "none" : remaining === 0 ? "paid" : overdue > 0 ? "late" : "ok";
+  let run = 0; const sched = inst.map(i => { const before = run; run += Number(i.amount) || 0; const covered = Math.max(0, Math.min(Number(i.amount) || 0, paid - before)); return {...i, covered, st: covered >= (Number(i.amount) || 0) - 0.001 ? "paid" : i.due <= today() ? "late" : covered > 0 ? "part" : "due"}; });
+  return {net, paid, remaining, overdue, status, next, sched};
+}
+const FST = {none: "بدون خطة", paid: "مسدد", ok: "منتظم", late: "متأخر"};
+const FST_PILL = {none: "", paid: "p", ok: "e", late: "a"};
+const INST_ST = {paid: "مدفوع", late: "متأخر", part: "مدفوع جزئياً", due: "قادم"};
+const INST_PILL = {paid: "p", late: "a", part: "l", due: ""};
+const paysOf = num => (S.pays || []).filter(p => p.num === num);
+
+function adminFinance(el){
+  const t = S.finTab || "sum";
+  const tabs = [["sum", "الملخص"], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ["set", "الإعدادات"]];
+  el.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${t === k ? "on" : ""}" data-ft="${k}">${v}</button>`).join("")}</div></div><div id="fb"></div>`;
+  el.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { S.finTab = b.dataset.ft; render(); });
+  if (!S.finSet) { $("#fb").innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
+  ({sum: finSummary, acc: finAccounts, pay: finPayments, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, set: finSettings})[t]($("#fb"));
+}
+function finRows(){
+  return Object.values(S.students).map(s => { const acc = (S.finAcc || {})[s.num]; return {s, acc, st: acc ? accStatus(acc, paysOf(s.num)) : {net: 0, paid: 0, remaining: 0, overdue: 0, status: "none"}}; });
+}
+function finSummary(el){
+  const rows = finRows(), m = today().slice(0, 7);
+  const sum = k => rows.reduce((a, r) => a + r.st[k], 0);
+  const monthPaid = (S.pays || []).filter(p => !p.void && (p.date || "").startsWith(m)).reduce((a, p) => a + Number(p.amount), 0);
+  const progs = (S.finSet.programs || []).map(pr => { const rs = rows.filter(r => r.acc && r.acc.program === pr.id); return {pr, n: rs.length, net: rs.reduce((a, r) => a + r.st.net, 0), paid: rs.reduce((a, r) => a + r.st.paid, 0)}; });
+  const methods = {}; (S.pays || []).filter(p => !p.void).forEach(p => methods[p.method] = (methods[p.method] || 0) + Number(p.amount));
+  el.innerHTML = `<div class="card"><h2>الملخص المالي</h2>
+    <div class="stats">
+      <div class="stat"><div class="n">${SAR(sum("net"))}</div><div class="l">إجمالي المستحق</div></div>
+      <div class="stat"><div class="n">${SAR(sum("paid"))}</div><div class="l">المحصّل</div></div>
+      <div class="stat"><div class="n">${SAR(sum("remaining"))}</div><div class="l">المتبقي</div></div>
+      <div class="stat"><div class="n" style="color:var(--abs)">${SAR(sum("overdue"))}</div><div class="l">متأخر السداد (${rows.filter(r => r.st.status === "late").length} طالب)</div></div>
+      <div class="stat"><div class="n">${SAR(monthPaid)}</div><div class="l">محصّل هذا الشهر</div></div>
+      <div class="stat"><div class="n">${SAR(monthFlow(m).out)}</div><div class="l">مصروف هذا الشهر</div></div>
+      <div class="stat"><div class="n" style="color:${monthFlow(m).net < 0 ? "var(--abs)" : "var(--green)"}">${SAR(monthFlow(m).net)}</div><div class="l">صافي هذا الشهر</div></div>
+      <div class="stat"><div class="n">${rows.filter(r => r.st.status === "none").length}</div><div class="l">طلاب بدون خطة سداد</div></div>
+    </div></div>
+  <div class="card"><h2>حسب البرنامج</h2>${progs.length ? `<div class="tbl"><table><thead><tr><th class="nm">البرنامج</th><th>الطلاب</th><th>المستحق</th><th>المحصّل</th><th>النسبة</th></tr></thead><tbody>${progs.map(x => `<tr><td class="nm">${esc(x.pr.name)}</td><td>${x.n}</td><td>${SAR(x.net)}</td><td>${SAR(x.paid)}</td><td>${x.net ? Math.round(x.paid / x.net * 100) : 0}%</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted" style="margin:0">أضف البرامج ورسومها من "البرامج والرسوم".</p>`}</div>
+  <div class="card"><h2>حسب طريقة الدفع</h2>${Object.keys(methods).length ? `<div class="list">${Object.entries(methods).map(([k, v]) => `<div class="item"><span class="grow">${esc(k)}</span><b>${SAR(v)}</b></div>`).join("")}</div>` : `<p class="muted" style="margin:0">ما فيه دفعات بعد.</p>`}</div>`;
+}
+function finAccounts(el){
+  const progName = id => ((S.finSet.programs || []).find(p => p.id === id) || {}).name || "—";
+  el.innerHTML = `<div class="card"><h2>حسابات الطلاب</h2><div class="row"><input type="text" id="faQ" class="grow" placeholder="ابحث بالاسم أو الرقم"><select id="faF" style="width:auto"><option value="">الكل</option>${Object.entries(FST).map(([k, v]) => `<option value="${k}" ${S.faF === k ? "selected" : ""}>${v}</option>`).join("")}</select></div></div><div class="list" id="faL"></div>`;
+  const draw = () => {
+    const q = norm($("#faQ").value), f = $("#faF").value; S.faF = f;
+    const rows = finRows().filter(r => (!q || norm(r.s.name).includes(q) || r.s.num.includes(q)) && (!f || r.st.status === f)).sort((a, b) => a.s.num.localeCompare(b.s.num));
+    $("#faL").innerHTML = rows.slice(0, 200).map(r => `<div class="item"><div class="grow"><div class="t">${esc(r.s.name)} <span class="muted">${esc(r.s.num)}</span></div>
+      <div class="muted">${r.acc ? `${esc(progName(r.acc.program))} · ${PLANS[r.acc.plan] || ""}` : "ما انفتح له حساب"}</div></div>
+      ${r.acc ? `<span class="muted">مدفوع ${SAR(r.st.paid)} من ${SAR(r.st.net)}</span>` : ""}<span class="pill ${FST_PILL[r.st.status]}">${FST[r.st.status]}${r.st.overdue ? " · " + SAR(r.st.overdue) : ""}</span>
+      <button class="btn sm ${r.acc ? "" : "gold"}" data-fa="${esc(r.s.num)}">${r.acc ? "فتح" : "فتح حساب"}</button></div>`).join("") || `<div class="card empty">ما فيه نتائج</div>`;
+    $("#faL").querySelectorAll("[data-fa]").forEach(b => b.onclick = () => openFinAccount(b.dataset.fa));
+  };
+  draw(); $("#faQ").oninput = draw; $("#faF").onchange = draw;
+}
+function openFinAccount(num){
+  const s = S.students[num]; if (!s) return;
+  S._modalGroup = null; S._finModal = num;
+  const acc = clone((S.finAcc || {})[num] || {num, name: s.name, program: "", fee: 0, discount: 0, discountNote: "", plan: "full", start: today(), months: 4, installments: [], phone: ""});
+  const progs = S.finSet.programs || [];
+  const draw = () => {
+    const st = accStatus(acc, paysOf(num)), pays = paysOf(num).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    $("#modalBox").innerHTML = `
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">${esc(s.name)} · ${esc(num)}</h2><button class="btn sm" id="fx">إغلاق</button></div>
+    <div class="stats"><div class="stat"><div class="n">${SAR(st.net)}</div><div class="l">الصافي</div></div><div class="stat"><div class="n">${SAR(st.paid)}</div><div class="l">مدفوع</div></div><div class="stat"><div class="n">${SAR(st.remaining)}</div><div class="l">متبقي</div></div><div class="stat"><div class="n" style="color:${st.overdue ? "var(--abs)" : "inherit"}">${SAR(st.overdue)}</div><div class="l">متأخر</div></div></div>
+    <div class="card" style="background:var(--bg)"><h3>خطة السداد</h3>
+      <div class="row">
+        <label class="f grow" for="fP">البرنامج<select id="fP"><option value="">اختر البرنامج</option>${progs.map(p => `<option value="${esc(p.id)}" ${acc.program === p.id ? "selected" : ""}>${esc(p.name)} · ${SAR(p.fee)}</option>`).join("")}</select></label>
+        <label class="f" for="fFee" style="width:130px">الرسوم<input type="number" id="fFee" min="0" value="${acc.fee || ""}"></label>
+        <label class="f" for="fDis" style="width:120px">الخصم<input type="number" id="fDis" min="0" value="${acc.discount || ""}"></label>
+        <label class="f grow" for="fDisN">سبب الخصم<input type="text" id="fDisN" value="${esc(acc.discountNote || "")}" placeholder="مثل: شراكة جامعة حائل"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="f grow" for="fPl">طريقة السداد<select id="fPl">${Object.entries(PLANS).map(([k, v]) => `<option value="${k}" ${acc.plan === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+        <label class="f" for="fSt" style="width:160px">تاريخ أول دفعة<input type="date" id="fSt" value="${esc(acc.start || today())}"></label>
+        <label class="f" for="fMo" style="width:110px;${acc.plan === "monthly" ? "" : "display:none"}">عدد الأشهر<input type="number" id="fMo" min="2" max="24" value="${acc.months || 4}"></label>
+        <label class="f" for="fSec" style="width:160px;${acc.plan === "half" ? "" : "display:none"}">موعد الدفعة الثانية<input type="date" id="fSec" value="${esc(acc.second || "")}"></label>
+        <button class="btn sm" id="fGen" style="align-self:flex-end">توليد الجدول</button>
+      </div>
+      ${acc.plan === "qasima" ? `<p class="muted">الطالب يقسّط مع قسيمة بلس، والمعهد يستلم المبلغ كامل. سجّل الدفعة بطريقة "قسيمة بلس" لما يوصل المبلغ.</p>` : ""}
+      <div class="row" style="margin-top:8px">
+        <label class="f grow" for="fPh">جوال للتذكير (الطالب أو ولي الأمر)<input type="tel" id="fPh" dir="ltr" value="${esc(acc.phone || "")}" placeholder="05xxxxxxxx"></label>
+        <label class="f grow" for="fPar">سجّل عن طريق (للعمولة)<select id="fPar"><option value="">بدون شريك</option>${(S.finSet.partners || []).map(p => `<option value="${esc(p.id)}" ${acc.partner === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+      </div>
+      <div class="tbl" style="margin-top:10px"><table><thead><tr><th>الدفعة</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>
+        ${st.sched.map((i, k) => i.xi !== undefined ? `<tr><td>${esc(i.label)}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>` : `<tr><td>${k + 1}</td><td><input type="date" data-idue="${i.ix}" value="${esc(i.due)}" style="width:150px;padding:4px"></td><td><input type="number" data-iamt="${i.ix}" value="${i.amount}" style="width:110px;padding:4px"></td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>`).join("") || `<tr><td colspan="4" class="empty">اضغط "توليد الجدول"</td></tr>`}
+      </tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn pri" id="fSave">حفظ الحساب</button><span class="muted" id="fChk"></span></div>
+    </div>
+    <div class="card" style="background:var(--bg)"><h3>رسوم إضافية</h3>
+      <div class="list">${(acc.extras || []).map((x, i) => `<div class="item" style="padding:8px 12px"><span class="grow">${esc(x.label)} · ${dH(x.date)}</span><b>${SAR(x.amount)}</b><button class="btn sm danger" data-xdel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه رسوم إضافية</span>`}</div>
+      <div class="row" style="margin-top:8px"><select id="xT" class="grow"><option value="">نوع الرسوم</option>${(S.finSet.extraTypes || []).map(t => `<option value="${esc(t.name)}" data-fee="${t.fee}">${esc(t.name)} · ${SAR(t.fee)}</option>`).join("")}<option value="_o">أخرى…</option></select>
+        <input type="text" id="xL" placeholder="اسم الرسوم" style="width:150px;display:none"><input type="number" id="xA" min="0" placeholder="المبلغ" style="width:110px"><input type="date" id="xD" value="${today()}" style="width:150px">
+        <button class="btn sm gold" id="xAdd" ${(S.finAcc || {})[num] ? "" : "disabled"}>+ إضافة</button></div>
+    </div>
+    <div class="card" style="background:var(--bg)"><h3>تسجيل دفعة</h3>
+      <div class="row">
+        <label class="f" for="pAmt" style="width:130px">المبلغ<input type="number" id="pAmt" min="0" step="0.01" value="${st.next ? Math.max(0, Math.min(st.remaining, st.overdue || st.next.amount)) : st.remaining || ""}"></label>
+        <label class="f" for="pM" style="width:170px">الطريقة<select id="pM">${METHODS.map(m => `<option ${acc.plan === "qasima" && m === "قسيمة بلس" ? "selected" : ""}>${m}</option>`).join("")}</select></label>
+        <label class="f" for="pD" style="width:160px">التاريخ<input type="date" id="pD" value="${today()}" max="${today()}"></label>
+        <label class="f grow" for="pRef">رقم العملية / المرجع<input type="text" id="pRef"></label>
+      </div>
+      <label class="f" for="pN" style="margin-top:8px">ملاحظة<input type="text" id="pN"></label>
+      <div class="row" style="margin-top:8px"><button class="btn gold" id="pAdd" ${(S.finAcc || {})[num] ? "" : "disabled"}>تسجيل الدفعة وطباعة السند</button>${(S.finAcc || {})[num] ? "" : `<span class="muted">احفظ الحساب أول</span>`}</div>
+    </div>
+    <div><h3>الدفعات (${pays.length})</h3><div class="list">${pays.map(p => `<div class="item" style="${p.void ? "opacity:.55" : ""}"><div class="grow"><div class="t">${SAR(p.amount)} · ${esc(p.method)}</div><div class="muted">سند ${esc(p.receiptNo)} · ${dH(p.date)}${p.ref ? " · " + esc(p.ref) : ""}${p.void ? " · ملغى: " + esc(p.voidReason || "") : ""}</div></div>
+      <button class="btn sm" data-prc="${esc(p.id)}">السند</button>${p.void ? "" : `<button class="btn sm danger" data-pv="${esc(p.id)}">إلغاء</button>`}</div>`).join("") || `<span class="muted">ما فيه دفعات</span>`}</div></div>
+    <div class="row"><button class="btn sm" id="fStmt">كشف حساب PDF</button>${acc.phone ? `<a class="btn sm gold" target="_blank" rel="noopener" href="https://wa.me/${normPhone(acc.phone)}?text=${encodeURIComponent(finReminder(s, st))}">تذكير واتساب</a>` : ""}</div>`;
+    $("#fx").onclick = () => { S._finModal = null; closeModal(); };
+    const readForm = () => { acc.program = $("#fP").value; acc.fee = Number($("#fFee").value) || 0; acc.discount = Number($("#fDis").value) || 0; acc.discountNote = $("#fDisN").value.trim(); acc.plan = $("#fPl").value; acc.start = $("#fSt").value; acc.months = Number($("#fMo").value) || 4; acc.second = $("#fSec").value; acc.phone = $("#fPh").value.trim(); acc.partner = $("#fPar").value;
+      document.querySelectorAll("[data-idue]").forEach(x => { const k = Number(x.dataset.idue); if (acc.installments[k]) acc.installments[k].due = x.value; });
+      document.querySelectorAll("[data-iamt]").forEach(x => { const k = Number(x.dataset.iamt); if (acc.installments[k]) acc.installments[k].amount = Number(x.value) || 0; }); };
+    $("#xT").onchange = () => { const o = $("#xT").selectedOptions[0]; $("#xL").style.display = $("#xT").value === "_o" ? "" : "none"; if (o && o.dataset.fee) $("#xA").value = o.dataset.fee; };
+    const saveExtras = async (list, msg) => { try { await setDoc(ref("finAccounts/" + num), {extras: list}, {merge: true}); acc.extras = list; S.finAcc[num] = {...S.finAcc[num], extras: list}; logAction(msg, s.name); toast("انحفظ"); draw(); } catch (e) { handleWriteErr(e); } };
+    $("#xAdd").onclick = () => { const label = $("#xT").value === "_o" ? $("#xL").value.trim() : $("#xT").value, amount = Number($("#xA").value) || 0; if (!label || amount <= 0) return toast("اختر النوع واكتب المبلغ"); saveExtras([...(acc.extras || []), {label, amount, date: $("#xD").value || today()}], `رسوم إضافية: ${label} ${amount}`); };
+    $("#modalBox").querySelectorAll("[data-xdel]").forEach(b => b.onclick = () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; } const l = [...(acc.extras || [])]; const [x] = l.splice(Number(b.dataset.xdel), 1); saveExtras(l, `حذف رسوم إضافية: ${x.label}`); });
+    $("#fP").onchange = () => { readForm(); const p = progs.find(x => x.id === acc.program); if (p) acc.fee = Number(p.fee) || 0; draw(); };
+    $("#fPl").onchange = () => { readForm(); acc.installments = buildPlan(Math.max(0, acc.fee - acc.discount), acc.plan, acc.start, acc.months, acc.second); draw(); };
+    $("#fGen").onclick = () => { readForm(); acc.installments = buildPlan(Math.max(0, acc.fee - acc.discount), acc.plan, acc.start, acc.months, acc.second); draw(); };
+    $("#fSave").onclick = async () => {
+      readForm();
+      const net = Math.max(0, acc.fee - acc.discount), sumI = Math.round(acc.installments.reduce((a, i) => a + i.amount, 0) * 100) / 100;
+      if (!acc.fee) return toast("حدد الرسوم");
+      if (!acc.installments.length) acc.installments = buildPlan(net, acc.plan, acc.start, acc.months, acc.second);
+      else if (Math.abs(sumI - net) > 0.01) return toast(`مجموع الدفعات ${SAR(sumI)} لازم يساوي الصافي ${SAR(net)}`);
+      acc.num = num; acc.name = s.name; acc.updatedAt = new Date().toISOString();
+      try { await setDoc(ref("finAccounts/" + num), acc); S.finAcc[num] = clone(acc); logAction("حفظ حساب مالي", `${s.name} · ${PLANS[acc.plan]} · ${SAR(net)}`); toast("انحفظ الحساب"); draw(); }
+      catch (e) { handleWriteErr(e); }
+    };
+    $("#pAdd").onclick = async () => {
+      const amount = Math.round((Number($("#pAmt").value) || 0) * 100) / 100;
+      if (amount <= 0) return toast("اكتب المبلغ");
+      if (amount > st.remaining + 0.01) return toast(`المبلغ أكبر من المتبقي (${SAR(st.remaining)})`);
+      const w = openPrint(); if (!w) return;
+      const pay = {num, name: s.name, amount, method: $("#pM").value, date: $("#pD").value || today(), ref: $("#pRef").value.trim(), note: $("#pN").value.trim(), program: acc.program, by: S.adminRole, void: false};
+      try {
+        const id = "p-" + uid() + uid();
+        await runTransaction(db, async tx => {
+          const c = await tx.get(ref("fin/counter")); const n = ((c.exists() && c.data().last) || 0) + 1;
+          pay.receiptNo = `${today().slice(0, 4)}-${String(n).padStart(5, "0")}`;
+          tx.set(ref("fin/counter"), {last: n}); tx.set(ref("payments/" + id), {...pay, at: serverTimestamp()});
+        });
+        logAction("تسجيل دفعة", `${s.name} · ${SAR(amount)} · سند ${pay.receiptNo}`);
+        const after = Math.max(0, Math.round((st.remaining - amount) * 100) / 100);
+        fillPrint(w, `سند قبض ${pay.receiptNo}`, [{html: receiptHTML({...pay, id}, acc, after)}]);
+        toast("انسجلت الدفعة");
+      } catch (e) { w.close(); handleWriteErr(e); }
+    };
+    $("#modalBox").querySelectorAll("[data-prc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.prc); const w = openPrint(); fillPrint(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
+    $("#modalBox").querySelectorAll("[data-pv]").forEach(b => b.onclick = async () => {
+      const reason = b.dataset.sure ? ($("#pvR") || {}).value : "";
+      if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="pvR" placeholder="سبب الإلغاء" style="width:160px">`); b.textContent = "تأكيد الإلغاء"; return; }
+      if (!reason || !reason.trim()) return toast("اكتب سبب الإلغاء");
+      try { await setDoc(ref("payments/" + b.dataset.pv), {void: true, voidReason: reason.trim(), voidBy: S.adminRole, voidAt: new Date().toISOString()}, {merge: true}); logAction("إلغاء دفعة", `${s.name} · ${reason.trim()}`); toast("انلغت الدفعة"); }
+      catch (e) { handleWriteErr(e); }
+    });
+    $("#fStmt").onclick = () => { const w = openPrint(); fillPrint(w, `كشف حساب ${s.name}`, [{html: statementHTML(s, acc, accStatus(acc, paysOf(num)), paysOf(num))}]); };
+  };
+  $("#modal").classList.add("on");
+  draw();
+  S._finDraw = draw;
+}
+function finReminder(s, st){
+  return `السلام عليكم ${s.name}\nالرقم الأكاديمي: ${s.num}\n\nنذكّركم بسداد المستحقات الدراسية.\nالمتأخر: ${SAR(st.overdue)}\nالمتبقي الكلي: ${SAR(st.remaining)}${st.next ? `\nالدفعة القادمة: ${SAR(st.next.amount)} بتاريخ ${st.next.due}` : ""}\n\nالمالية\n${INST_AR}`;
+}
+function receiptHTML(p, acc, after){
+  const prog = ((S.finSet && S.finSet.programs) || []).find(x => x.id === (p.program || acc.program));
+  return `<h1>سند قبض</h1>
+  <div class="info"><div><b>رقم السند:</b> ${esc(p.receiptNo || "—")}</div><div><b>التاريخ:</b> ${esc(bothDates(p.date))}</div></div>
+  ${p.void ? `<p style="color:#B3261E;font-weight:700;font-size:16px;text-align:center">سند ملغى · ${esc(p.voidReason || "")}</p>` : ""}
+  <table><tbody>
+    <tr><td class="n" style="width:30%"><b>استلمنا من</b></td><td class="n">${esc(p.name)} · الرقم الأكاديمي ${esc(p.num)}</td></tr>
+    <tr><td class="n"><b>مبلغ وقدره</b></td><td class="n" style="font-size:16px"><b>${SAR(p.amount)}</b></td></tr>
+    <tr><td class="n"><b>طريقة الدفع</b></td><td class="n">${esc(p.method)}${p.ref ? " · مرجع: " + esc(p.ref) : ""}</td></tr>
+    <tr><td class="n"><b>وذلك عن</b></td><td class="n">رسوم ${esc(prog ? prog.name : "البرنامج التدريبي")}${p.note ? " · " + esc(p.note) : ""}</td></tr>
+    ${after !== null ? `<tr><td class="n"><b>المتبقي بعد الدفعة</b></td><td class="n">${SAR(after)}</td></tr>` : ""}
+  </tbody></table>
+  <p style="font-size:10.5px;color:#666;margin-top:10px">سند قبض داخلي، وليس فاتورة ضريبية.</p>
+  <div class="sig"><div>المحاسب</div><div>الختم</div></div>`;
+}
+function statementHTML(s, acc, st, pays){
+  return `<h1>كشف حساب متدرب</h1>
+  <div class="info"><div><b>الاسم:</b> ${esc(s.name)}</div><div><b>الرقم الأكاديمي:</b> ${esc(s.num)}</div><div><b>طريقة السداد:</b> ${PLANS[acc.plan] || ""}</div><div><b>الرسوم:</b> ${SAR(acc.fee)}${acc.discount ? ` · خصم ${SAR(acc.discount)}${acc.discountNote ? " (" + esc(acc.discountNote) + ")" : ""}` : ""}</div></div>
+  <table><thead><tr><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>المتأخر</th></tr></thead><tbody><tr><td>${SAR(st.net)}</td><td>${SAR(st.paid)}</td><td>${SAR(st.remaining)}</td><td>${SAR(st.overdue)}</td></tr></tbody></table>
+  <h3 style="color:#1F5136">جدول الدفعات</h3><table><thead><tr><th>#</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>${st.sched.map((i, k) => `<tr><td>${i.label ? esc(i.label) : k + 1}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td>${INST_ST[i.st]}</td></tr>`).join("")}</tbody></table>
+  <h3 style="color:#1F5136">الدفعات المستلمة</h3><table><thead><tr><th>السند</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th></tr></thead><tbody>${pays.filter(p => !p.void).map(p => `<tr><td>${esc(p.receiptNo)}</td><td>${dH(p.date)}</td><td>${SAR(p.amount)}</td><td>${esc(p.method)}</td></tr>`).join("") || `<tr><td colspan="4">ما فيه دفعات</td></tr>`}</tbody></table>
+  <div class="sig"><div>المالية</div><div>الختم</div></div>`;
+}
+function finPayments(el){
+  const m = S.payM || today().slice(0, 7);
+  const list = (S.pays || []).filter(p => (p.date || "").startsWith(m)).sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.receiptNo || "").localeCompare(a.receiptNo || ""));
+  const tot = list.filter(p => !p.void).reduce((a, p) => a + Number(p.amount), 0);
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">الدفعات</h2><div class="row"><input type="month" id="payM" value="${esc(m)}" style="width:170px"><button class="btn sm" id="payX">تنزيل Excel</button></div></div>
+    <p class="muted" style="margin:8px 0 0">${list.filter(p => !p.void).length} دفعة · المجموع <b>${SAR(tot)}</b></p></div>
+  <div class="tbl"><table><thead><tr><th>السند</th><th>التاريخ</th><th class="nm">الطالب</th><th>المبلغ</th><th>الطريقة</th><th>المرجع</th><th></th></tr></thead><tbody>
+  ${list.map(p => `<tr style="${p.void ? "opacity:.5;text-decoration:line-through" : ""}"><td>${esc(p.receiptNo)}</td><td>${dH(p.date)}</td><td class="nm">${esc(p.name)}</td><td>${SAR(p.amount)}</td><td>${esc(p.method)}</td><td>${esc(p.ref || "")}</td><td><button class="btn sm" data-fo="${esc(p.num)}">الحساب</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">ما فيه دفعات في هذا الشهر</td></tr>`}</tbody></table></div>`;
+  $("#payM").onchange = e => { S.payM = e.target.value; render(); };
+  el.querySelectorAll("[data-fo]").forEach(b => b.onclick = () => openFinAccount(b.dataset.fo));
+  $("#payX").onclick = () => excelDownload(`الدفعات ${m}`, [{title: "الدفعات", rows: [[INST_AR], [`الدفعات · ${m}`], [], ["السند", "التاريخ", "الطالب", "الرقم", "المبلغ", "الطريقة", "المرجع", "الحالة"], ...list.map(p => [p.receiptNo, p.date, p.name, p.num, Number(p.amount), p.method, p.ref || "", p.void ? "ملغى" : "مستلم"]), [], ["", "", "المجموع", "", tot]], widths: [13, 12, 28, 11, 11, 14, 16, 9]}]);
+}
+function finLate(el){
+  const rows = finRows().filter(r => r.st.status === "late").sort((a, b) => b.st.overdue - a.st.overdue);
+  el.innerHTML = `<div class="card"><h2>المتأخرين عن السداد (${rows.length})</h2><p class="muted" style="margin:0">المجموع المتأخر: <b>${SAR(rows.reduce((a, r) => a + r.st.overdue, 0))}</b></p></div>
+  <div class="list">${rows.map(r => `<div class="item"><div class="grow"><div class="t">${esc(r.s.name)} <span class="muted">${esc(r.s.num)}</span></div><div class="muted">متأخر ${SAR(r.st.overdue)} · متبقي ${SAR(r.st.remaining)}</div></div>
+    ${r.acc.phone ? `<a class="btn sm gold" target="_blank" rel="noopener" href="https://wa.me/${normPhone(r.acc.phone)}?text=${encodeURIComponent(finReminder(r.s, r.st))}">تذكير واتساب</a>` : `<span class="pill">بدون جوال</span>`}
+    <button class="btn sm" data-fo="${esc(r.s.num)}">الحساب</button></div>`).join("") || `<div class="card empty">ما فيه متأخرين.</div>`}</div>`;
+  el.querySelectorAll("[data-fo]").forEach(b => b.onclick = () => openFinAccount(b.dataset.fo));
+}
+function finSettings(el){
+  const progs = S.finSet.programs || [];
+  el.innerHTML = `<div class="card"><h2>البرامج والرسوم</h2>
+    <div class="list">${progs.map((p, i) => `<div class="item"><span class="grow"><b>${esc(p.name)}</b></span><input type="number" data-pfee="${i}" value="${p.fee}" style="width:130px"><span class="muted">ر.س</span><button class="btn sm danger" data-pdel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه برامج</span>`}</div>
+    <div class="row" style="margin-top:10px"><input type="text" id="prN" class="grow" placeholder="اسم البرنامج، مثل: دبلوم القانون"><input type="number" id="prF" min="0" placeholder="الرسوم" style="width:130px"><button class="btn gold sm" id="prAdd">+ إضافة</button><button class="btn pri sm" id="prSave">حفظ الرسوم</button></div>
+    <p class="muted">تغيير رسوم البرنامج ما يغيّر حسابات الطلاب المفتوحة من قبل.</p></div>
+  <div class="card"><h2>أنواع الرسوم الإضافية</h2>
+    <div class="list">${(S.finSet.extraTypes || []).map((t, i) => `<div class="item"><span class="grow"><b>${esc(t.name)}</b></span><span>${SAR(t.fee)}</span><button class="btn sm danger" data-etdel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه أنواع. مثل: الشهادة، الحقيبة التدريبية، إعادة اختبار.</span>`}</div>
+    <div class="row" style="margin-top:10px"><input type="text" id="etN" class="grow" placeholder="مثل: إعادة اختبار"><input type="number" id="etF" min="0" placeholder="المبلغ" style="width:130px"><button class="btn gold sm" id="etAdd">+ إضافة</button></div></div>
+  <div class="card"><h2>الشركاء</h2>
+    <p class="muted" style="margin-top:0">إعلاميين أو مدربين أو جهات يجيبون طلاب. اختر الشريك في حساب الطالب المالي، وتنحسب عمولته تلقائي.</p>
+    <div class="list">${(S.finSet.partners || []).map((p, i) => `<div class="item"><div class="grow"><b>${esc(p.name)}</b> <span class="pill">${esc(p.type)}</span><div class="muted">${p.kind === "percent" ? `${p.value}% من المبلغ المحصّل من الطالب` : `${SAR(p.value)} عن كل طالب بعد أول دفعة`}${p.phone ? ` · <span dir="ltr">${esc(p.phone)}</span>` : ""}</div></div><button class="btn sm danger" data-ptdel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه شركاء</span>`}</div>
+    <div class="row" style="margin-top:10px"><input type="text" id="ptN" class="grow" placeholder="اسم الشريك"><select id="ptT" style="width:auto"><option>إعلامي</option><option>مدرب</option><option>جهة</option><option>أخرى</option></select><input type="tel" id="ptP" dir="ltr" placeholder="الجوال" style="width:140px"></div>
+    <div class="row" style="margin-top:8px"><select id="ptK" style="width:auto"><option value="fixed">مبلغ ثابت عن كل طالب</option><option value="percent">نسبة من المحصّل</option></select><input type="number" id="ptV" min="0" placeholder="المبلغ أو النسبة" style="width:150px"><button class="btn gold sm" id="ptAdd">+ إضافة شريك</button></div></div>`;
+  const saveKey = async (k, list, msg) => { try { await setDoc(ref("fin/settings"), {[k]: list}, {merge: true}); S.finSet[k] = list; logAction(msg, ""); toast("انحفظ"); render(); } catch (e) { handleWriteErr(e); } };
+  $("#etAdd").onclick = () => { const name = $("#etN").value.trim(), fee = Number($("#etF").value); if (!name || !(fee > 0)) return toast("اكتب الاسم والمبلغ"); saveKey("extraTypes", [...(S.finSet.extraTypes || []), {name, fee}], "إضافة نوع رسوم: " + name); };
+  el.querySelectorAll("[data-etdel]").forEach(b => b.onclick = () => { const l = clone(S.finSet.extraTypes || []); l.splice(Number(b.dataset.etdel), 1); saveKey("extraTypes", l, "حذف نوع رسوم"); });
+  $("#ptAdd").onclick = () => { const name = $("#ptN").value.trim(), value = Number($("#ptV").value), kind = $("#ptK").value; if (!name || !(value > 0) || (kind === "percent" && value > 100)) return toast("اكتب الاسم والعمولة"); saveKey("partners", [...(S.finSet.partners || []), {id: "pa-" + uid(), name, type: $("#ptT").value, phone: $("#ptP").value.trim(), kind, value}], "إضافة شريك: " + name); };
+  el.querySelectorAll("[data-ptdel]").forEach(b => b.onclick = () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; } const l = clone(S.finSet.partners || []); l.splice(Number(b.dataset.ptdel), 1); saveKey("partners", l, "حذف شريك"); });
+  const save = async list => { try { await setDoc(ref("fin/settings"), {programs: list}, {merge: true}); S.finSet.programs = list; logAction("البرامج والرسوم", list.map(p => `${p.name}: ${p.fee}`).join("، ")); toast("انحفظ"); render(); } catch (e) { handleWriteErr(e); } };
+  $("#prAdd").onclick = () => { const name = $("#prN").value.trim(), fee = Number($("#prF").value); if (!name || !(fee >= 0)) return toast("اكتب الاسم والرسوم"); save([...progs, {id: "pr-" + uid(), name, fee}]); };
+  $("#prSave").onclick = () => { const list = clone(progs); el.querySelectorAll("[data-pfee]").forEach(x => list[Number(x.dataset.pfee)].fee = Number(x.value) || 0); save(list); };
+  el.querySelectorAll("[data-pdel]").forEach(b => b.onclick = () => { const l = clone(progs); l.splice(Number(b.dataset.pdel), 1); save(l); });
+}
+
+/* ---- expenses, partners, monthly report ---- */
+const EXP_CATS = ["إيجار", "كهرباء وماء وإنترنت", "تسويق وإعلان", "مستلزمات وقرطاسية", "صيانة", "رسوم حكومية", "رواتب إدارية", "أخرى"];
+const sumAmt = l => Math.round(l.reduce((a, x) => a + (Number(x.amount != null ? x.amount : x.net) || 0), 0) * 100) / 100;
+function monthFlow(m){
+  const inc = (S.pays || []).filter(p => !p.void && (p.date || "").startsWith(m));
+  const exp = (S.exps || []).filter(x => !x.void && (x.date || "").startsWith(m));
+  const sal = Object.values(S.salPays || {}).filter(x => (x.paidDate || "").startsWith(m));
+  const com = (S.commPays || []).filter(x => !x.void && (x.date || "").startsWith(m));
+  const income = sumAmt(inc), expT = sumAmt(exp), salT = sumAmt(sal), comT = sumAmt(com), out = Math.round((expT + salT + comT) * 100) / 100;
+  return {inc, exp, sal, com, income, expT, salT, comT, out, net: Math.round((income - out) * 100) / 100};
+}
+function finExpenses(el){
+  const m = S.expM || today().slice(0, 7);
+  const list = (S.exps || []).filter(x => (x.date || "").startsWith(m)).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const byCat = {}; list.filter(x => !x.void).forEach(x => byCat[x.category] = (byCat[x.category] || 0) + Number(x.amount));
+  el.innerHTML = `<div class="card"><h2>تسجيل مصروف</h2>
+    <div class="row"><select id="exC" style="width:auto">${EXP_CATS.map(c => `<option>${c}</option>`).join("")}</select><input type="number" id="exA" min="0" step="0.01" placeholder="المبلغ" style="width:130px"><input type="date" id="exD" value="${today()}" max="${today()}" style="width:160px"><select id="exM2" style="width:auto">${["تحويل بنكي", "نقد", "مدى / شبكة"].map(x => `<option>${x}</option>`).join("")}</select></div>
+    <div class="row" style="margin-top:8px"><input type="text" id="exT" class="grow" placeholder="الوصف، مثل: إيجار شهر نوفمبر"><button class="btn gold" id="exAdd">+ تسجيل</button></div></div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">مصروفات الشهر</h2><input type="month" id="expM" value="${esc(m)}" style="width:170px"></div>
+    <p class="muted">المجموع <b>${SAR(sumAmt(list.filter(x => !x.void)))}</b>${Object.keys(byCat).length ? " · " + Object.entries(byCat).map(([k, v]) => `${esc(k)}: ${SAR(v)}`).join(" · ") : ""}</p>
+    <div class="list">${list.map(x => `<div class="item" style="${x.void ? "opacity:.5;text-decoration:line-through" : ""}"><div class="grow"><div class="t">${SAR(x.amount)} · ${esc(x.category)}</div><div class="muted">${dH(x.date)} · ${esc(x.method || "")}${x.desc ? " · " + esc(x.desc) : ""}${x.void ? " · ملغى: " + esc(x.voidReason || "") : ""}</div></div>${x.void ? "" : `<button class="btn sm danger" data-exv="${esc(x.id)}">إلغاء</button>`}</div>`).join("") || `<span class="muted">ما فيه مصروفات في هذا الشهر</span>`}</div></div>`;
+  $("#expM").onchange = e => { S.expM = e.target.value; render(); };
+  $("#exAdd").onclick = async () => {
+    const amount = Math.round((Number($("#exA").value) || 0) * 100) / 100; if (amount <= 0) return toast("اكتب المبلغ");
+    const d = {category: $("#exC").value, amount, date: $("#exD").value || today(), method: $("#exM2").value, desc: $("#exT").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
+    try { await setDoc(ref("expenses/e-" + uid() + uid()), d); logAction("تسجيل مصروف", `${d.category} · ${SAR(amount)}`); toast("انسجل المصروف"); } catch (e) { handleWriteErr(e); }
+  };
+  el.querySelectorAll("[data-exv]").forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="exVR" placeholder="سبب الإلغاء" style="width:150px">`); b.textContent = "تأكيد الإلغاء"; return; }
+    const reason = ($("#exVR") || {}).value || ""; if (!reason.trim()) return toast("اكتب سبب الإلغاء");
+    try { await setDoc(ref("expenses/" + b.dataset.exv), {void: true, voidReason: reason.trim(), voidBy: S.adminRole, voidAt: new Date().toISOString()}, {merge: true}); logAction("إلغاء مصروف", reason.trim()); } catch (e) { handleWriteErr(e); }
+  });
+}
+function partnerStats(p){
+  const rows = Object.values(S.finAcc || {}).filter(a => a.partner === p.id).map(acc => {
+    const st = accStatus(acc, paysOf(acc.num));
+    const earned = p.kind === "percent" ? Math.round(st.paid * p.value) / 100 : (st.paid > 0 ? Number(p.value) : 0);
+    return {acc, st, earned};
+  });
+  const earned = Math.round(rows.reduce((a, r) => a + r.earned, 0) * 100) / 100;
+  const paidOut = sumAmt((S.commPays || []).filter(x => !x.void && x.partnerId === p.id));
+  return {rows, earned, paidOut, balance: Math.round((earned - paidOut) * 100) / 100};
+}
+function finPartners(el){
+  const ps = S.finSet.partners || [];
+  if (!ps.length) { el.innerHTML = `<div class="card empty">أضف الشركاء من "الإعدادات"، وبعدها اختر الشريك في حساب كل طالب سجّل عن طريقه.</div>`; return; }
+  const all = ps.map(p => ({p, ...partnerStats(p)}));
+  el.innerHTML = `<div class="card"><h2>الشركاء والعمولات</h2>
+    <div class="stats"><div class="stat"><div class="n">${SAR(all.reduce((a, x) => a + x.earned, 0))}</div><div class="l">عمولات مستحقة</div></div><div class="stat"><div class="n">${SAR(all.reduce((a, x) => a + x.paidOut, 0))}</div><div class="l">مصروفة</div></div><div class="stat"><div class="n">${SAR(all.reduce((a, x) => a + x.balance, 0))}</div><div class="l">باقي لهم</div></div></div>
+    <p class="muted">النسبة تنحسب من المبلغ اللي دفعه الطالب فعلاً. المبلغ الثابت يستحق بعد أول دفعة من الطالب.</p></div>
+  <div class="list">${all.map(x => `<div class="item" style="align-items:flex-start"><div class="grow"><div class="t">${esc(x.p.name)} <span class="pill">${esc(x.p.type)}</span></div>
+      <div class="muted">${x.rows.length} طالب · مستحق ${SAR(x.earned)} · مصروف ${SAR(x.paidOut)} · <b>الباقي ${SAR(x.balance)}</b></div>
+      ${x.rows.length ? `<details><summary class="muted" style="cursor:pointer">الطلاب</summary><div class="muted">${x.rows.map(r => `${esc(r.acc.name)}: دفع ${SAR(r.st.paid)} ← عمولة ${SAR(r.earned)}`).join("<br>")}</div></details>` : ""}</div>
+      <button class="btn sm" data-pst="${esc(x.p.id)}">كشف</button>${x.balance > 0 ? `<button class="btn sm gold" data-ppay="${esc(x.p.id)}">صرف عمولة</button>` : ""}</div>`).join("")}</div>`;
+  el.querySelectorAll("[data-pst]").forEach(b => b.onclick = () => { const x = all.find(y => y.p.id === b.dataset.pst); const w = openPrint(); fillPrint(w, `كشف عمولات ${x.p.name}`, [{html: partnerHTML(x)}]); });
+  el.querySelectorAll("[data-ppay]").forEach(b => b.onclick = () => {
+    const x = all.find(y => y.p.id === b.dataset.ppay);
+    S._finModal = null; S._modalGroup = null;
+    $("#modalBox").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">صرف عمولة · ${esc(x.p.name)}</h2><button class="btn sm" id="cx">إغلاق</button></div>
+      <p class="muted">الباقي له: ${SAR(x.balance)}</p>
+      <div class="row"><label class="f" for="cA" style="width:140px">المبلغ<input type="number" id="cA" value="${x.balance}"></label><label class="f" for="cM" style="width:160px">الطريقة<select id="cM"><option>تحويل بنكي</option><option>نقد</option></select></label><label class="f" for="cD" style="width:160px">التاريخ<input type="date" id="cD" value="${today()}"></label></div>
+      <label class="f" for="cN">ملاحظة<input type="text" id="cN"></label><button class="btn gold" id="cGo">تسجيل الصرف وطباعة السند</button>`;
+    $("#modal").classList.add("on"); $("#cx").onclick = closeModal;
+    $("#cGo").onclick = async () => {
+      const amount = Math.round((Number($("#cA").value) || 0) * 100) / 100; if (amount <= 0 || amount > x.balance + 0.01) return toast("المبلغ لازم يكون بين صفر والباقي");
+      const w = openPrint(); if (!w) return;
+      const d = {partnerId: x.p.id, name: x.p.name, amount, method: $("#cM").value, date: $("#cD").value || today(), note: $("#cN").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
+      try { await setDoc(ref("commPays/c-" + uid() + uid()), d); logAction("صرف عمولة", `${x.p.name} · ${SAR(amount)}`); fillPrint(w, `سند صرف عمولة ${x.p.name}`, [{html: `<h1>سند صرف عمولة</h1><div class="info"><div><b>الشريك:</b> ${esc(d.name)}</div><div><b>التاريخ:</b> ${esc(bothDates(d.date))}</div><div><b>الطريقة:</b> ${esc(d.method)}</div></div><table><tbody><tr><td class="n"><b>المبلغ</b></td><td style="font-size:16px"><b>${SAR(amount)}</b></td></tr><tr><td class="n"><b>الباقي بعد الصرف</b></td><td>${SAR(x.balance - amount)}</td></tr></tbody></table>${d.note ? `<p>ملاحظة: ${esc(d.note)}</p>` : ""}<div class="sig"><div>المالية</div><div>المستلم<br><small>الاسم والتوقيع</small></div></div>`}]); closeModal(); }
+      catch (e) { w.close(); handleWriteErr(e); }
+    };
+  });
+}
+function partnerHTML(x){
+  const pays = (S.commPays || []).filter(c => !c.void && c.partnerId === x.p.id).sort((a, b) => a.date.localeCompare(b.date));
+  return `<h1>كشف عمولات شريك</h1><div class="info"><div><b>الشريك:</b> ${esc(x.p.name)} (${esc(x.p.type)})</div><div><b>العمولة:</b> ${x.p.kind === "percent" ? x.p.value + "% من المحصّل" : SAR(x.p.value) + " عن كل طالب"}</div></div>
+  <table><thead><tr><th>الطالب</th><th>المدفوع</th><th>العمولة</th></tr></thead><tbody>${x.rows.map(r => `<tr><td>${esc(r.acc.name)}</td><td>${SAR(r.st.paid)}</td><td>${SAR(r.earned)}</td></tr>`).join("") || `<tr><td colspan="3">ما فيه طلاب</td></tr>`}</tbody></table>
+  <h3 style="color:#1F5136">المصروف</h3><table><thead><tr><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th></tr></thead><tbody>${pays.map(c => `<tr><td>${dH(c.date)}</td><td>${SAR(c.amount)}</td><td>${esc(c.method)}</td></tr>`).join("") || `<tr><td colspan="3">ما انصرف شي</td></tr>`}</tbody></table>
+  <table><tbody><tr><td class="n"><b>المستحق</b></td><td>${SAR(x.earned)}</td><td class="n"><b>المصروف</b></td><td>${SAR(x.paidOut)}</td><td class="n"><b>الباقي</b></td><td><b>${SAR(x.balance)}</b></td></tr></tbody></table>`;
+}
+function finReport(el){
+  const m = S.repM2 || today().slice(0, 7), f = monthFlow(m);
+  const y = m.slice(0, 4), months = Array.from({length: 12}, (_, i) => `${y}-${String(i + 1).padStart(2, "0")}`).map(k => ({k, ...monthFlow(k)}));
+  const byCat = {}; f.exp.forEach(x => byCat[x.category] = (byCat[x.category] || 0) + Number(x.amount));
+  const html = () => `<h1>التقرير المالي الشهري</h1><div class="info"><div><b>الشهر:</b> ${esc(m)}</div></div>
+    <table><tbody>
+      <tr><td class="n"><b>الإيرادات (رسوم الطلاب)</b></td><td>${SAR(f.income)}</td></tr>
+      ${Object.entries(byCat).map(([k, v]) => `<tr><td class="n">مصروف: ${esc(k)}</td><td>${SAR(v)}</td></tr>`).join("")}
+      <tr><td class="n">رواتب المدربين</td><td>${SAR(f.salT)}</td></tr>
+      <tr><td class="n">عمولات الشركاء</td><td>${SAR(f.comT)}</td></tr>
+      <tr><td class="n"><b>إجمالي المصروفات</b></td><td><b>${SAR(f.out)}</b></td></tr>
+      <tr><td class="n"><b>الصافي</b></td><td style="font-size:16px"><b>${SAR(f.net)}</b></td></tr>
+    </tbody></table>
+    <h3 style="color:#1F5136">سنة ${esc(y)}</h3><table><thead><tr><th>الشهر</th><th>الإيرادات</th><th>المصروفات</th><th>الصافي</th></tr></thead><tbody>${months.map(x => `<tr><td>${x.k}</td><td>${SAR(x.income)}</td><td>${SAR(x.out)}</td><td>${SAR(x.net)}</td></tr>`).join("")}</tbody></table>
+    <div class="sig"><div>المالية</div><div>الإدارة</div></div>`;
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">التقرير المالي الشهري</h2><div class="row"><input type="month" id="rpM" value="${esc(m)}" style="width:170px"><button class="btn sm pri" id="rpP">طباعة / PDF</button><button class="btn sm" id="rpX">Excel</button></div></div>
+    <div class="stats" style="margin-top:10px"><div class="stat"><div class="n">${SAR(f.income)}</div><div class="l">الإيرادات</div></div><div class="stat"><div class="n">${SAR(f.out)}</div><div class="l">المصروفات</div></div><div class="stat"><div class="n" style="color:${f.net < 0 ? "var(--abs)" : "var(--green)"}">${SAR(f.net)}</div><div class="l">الصافي</div></div></div></div>
+  <div class="card"><h2>تفصيل المصروفات</h2><div class="list">${[...Object.entries(byCat), ["رواتب المدربين", f.salT], ["عمولات الشركاء", f.comT]].filter(([, v]) => v).map(([k, v]) => `<div class="item"><span class="grow">${esc(k)}</span><b>${SAR(v)}</b><span class="muted">${f.out ? Math.round(v / f.out * 100) : 0}%</span></div>`).join("") || `<span class="muted">ما فيه مصروفات</span>`}</div></div>
+  <div class="card"><h2>سنة ${esc(y)}</h2><div class="tbl"><table><thead><tr><th>الشهر</th><th>الإيرادات</th><th>المصروفات</th><th>الصافي</th></tr></thead><tbody>${months.map(x => `<tr><td>${x.k}</td><td>${SAR(x.income)}</td><td>${SAR(x.out)}</td><td style="color:${x.net < 0 ? "var(--abs)" : "inherit"}">${SAR(x.net)}</td></tr>`).join("")}
+    <tr><td><b>المجموع</b></td><td><b>${SAR(months.reduce((a, x) => a + x.income, 0))}</b></td><td><b>${SAR(months.reduce((a, x) => a + x.out, 0))}</b></td><td><b>${SAR(months.reduce((a, x) => a + x.net, 0))}</b></td></tr></tbody></table></div></div>`;
+  $("#rpM").onchange = e => { S.repM2 = e.target.value; render(); };
+  $("#rpP").onclick = () => { const w = openPrint(); fillPrint(w, `التقرير المالي ${m}`, [{html: html()}]); };
+  $("#rpX").onclick = () => excelDownload(`التقرير المالي ${m}`, [
+    {title: "الشهر", rows: [[INST_AR], [`التقرير المالي · ${m}`], [], ["البند", "المبلغ"], ["الإيرادات", f.income], ...Object.entries(byCat).map(([k, v]) => ["مصروف: " + k, v]), ["رواتب المدربين", f.salT], ["عمولات الشركاء", f.comT], ["إجمالي المصروفات", f.out], ["الصافي", f.net], [], ["تفصيل المصروفات"], ["التاريخ", "البند", "المبلغ", "الوصف"], ...f.exp.map(x => [x.date, x.category, Number(x.amount), x.desc || ""]), ...f.sal.map(x => [x.paidDate, "راتب: " + x.name, Number(x.net), ""]), ...f.com.map(x => [x.date, "عمولة: " + x.name, Number(x.amount), x.note || ""])], widths: [14, 26, 12, 30]},
+    {title: "السنة", rows: [[`سنة ${y}`], [], ["الشهر", "الإيرادات", "المصروفات", "الصافي"], ...months.map(x => [x.k, x.income, x.out, x.net])], widths: [12, 14, 14, 14]}]);
+}
+
+function finSalaries(el){
+  const m = S.salM || today().slice(0, 7), rates = (S.finSet && S.finSet.salaries) || {};
+  const ts = Object.values(S.trainers).sort((a, b) => a.name.localeCompare(b.name, "ar"));
+  const rec = t => (S.salPays || {})[`${m}_${t.id}`];
+  const total = ts.reduce((a, t) => a + (rec(t) ? Number(rec(t).net) : 0), 0), due = ts.reduce((a, t) => a + (rec(t) ? 0 : Number(rates[t.id]) || 0), 0);
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">رواتب المدربين</h2><div class="row"><input type="month" id="salM" value="${esc(m)}" style="width:170px"><button class="btn sm" id="salX">تنزيل Excel</button></div></div>
+    <div class="stats" style="margin-top:10px"><div class="stat"><div class="n">${SAR(total)}</div><div class="l">مصروف لشهر ${esc(m)}</div></div><div class="stat"><div class="n">${SAR(due)}</div><div class="l">باقي ما انصرف</div></div><div class="stat"><div class="n">${ts.filter(t => rec(t)).length}/${ts.length}</div><div class="l">مدربين استلموا</div></div></div>
+    <p class="muted">الرواتب يشوفها موظف المالية والإدارة بس.</p></div>
+  <div class="list">${ts.map(t => { const r = rec(t); return `<div class="item"><div class="grow"><div class="t">${esc(trainerTitle(t))}</div><div class="muted">${r ? `انصرف ${SAR(r.net)} · ${dH(r.paidDate)} · ${esc(r.method)}${r.bonus ? ` · إضافي ${SAR(r.bonus)}` : ""}${r.deduct ? ` · خصم ${SAR(r.deduct)}` : ""}` : "ما انصرف لهذا الشهر"}</div></div>
+    <label class="muted" for="sr-${esc(t.id)}">الراتب</label><input type="number" id="sr-${esc(t.id)}" data-rate="${esc(t.id)}" value="${rates[t.id] || ""}" style="width:110px">
+    ${r ? `<button class="btn sm" data-svp="${esc(t.id)}">السند</button><button class="btn sm danger" data-sdl="${esc(t.id)}">إلغاء الصرف</button>` : `<button class="btn sm gold" data-spay="${esc(t.id)}">صرف</button>`}</div>`; }).join("")}</div>
+  <div class="row"><button class="btn pri sm" id="rateSave">حفظ الرواتب</button></div>`;
+  $("#salM").onchange = e => { S.salM = e.target.value; render(); };
+  $("#rateSave").onclick = async () => {
+    const r = {}; el.querySelectorAll("[data-rate]").forEach(x => { if (x.value !== "") r[x.dataset.rate] = Number(x.value) || 0; });
+    try { await setDoc(ref("fin/settings"), {salaries: r}, {merge: true}); S.finSet.salaries = r; logAction("رواتب المدربين", "تعديل الرواتب"); toast("انحفظت الرواتب"); } catch (e) { handleWriteErr(e); }
+  };
+  el.querySelectorAll("[data-spay]").forEach(b => b.onclick = () => openSalaryPay(b.dataset.spay, m));
+  el.querySelectorAll("[data-svp]").forEach(b => b.onclick = () => { const r = rec(S.trainers[b.dataset.svp]); const w = openPrint(); fillPrint(w, `سند صرف راتب ${r.name}`, [{html: salaryHTML(r)}]); });
+  el.querySelectorAll("[data-sdl]").forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; }
+    try { await deleteDoc(ref(`salaryPays/${m}_${b.dataset.sdl}`)); logAction("إلغاء صرف راتب", `${(S.trainers[b.dataset.sdl] || {}).name} · ${m}`); toast("انلغى الصرف"); } catch (e) { handleWriteErr(e); }
+  });
+  $("#salX").onclick = () => excelDownload(`رواتب المدربين ${m}`, [{title: "الرواتب", rows: [[INST_AR], [`رواتب المدربين · ${m}`], [], ["المدرب", "الراتب", "إضافي", "خصم", "الصافي", "تاريخ الصرف", "الطريقة", "ملاحظة"], ...ts.map(t => { const r = rec(t); return [t.name, Number(rates[t.id]) || 0, r ? r.bonus || 0 : "", r ? r.deduct || 0 : "", r ? r.net : "", r ? r.paidDate : "لم يُصرف", r ? r.method : "", r ? r.note || "" : ""]; })], widths: [26, 11, 10, 10, 11, 13, 14, 24]}]);
+}
+function openSalaryPay(tid, m){
+  const t = S.trainers[tid], base = Number(((S.finSet && S.finSet.salaries) || {})[tid]) || 0;
+  S._modalGroup = null; S._finModal = null;
+  $("#modalBox").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">صرف راتب · ${esc(trainerTitle(t))}</h2><button class="btn sm" id="sx">إغلاق</button></div>
+    <p class="muted" style="margin:0">شهر ${esc(m)}</p>
+    <div class="row">
+      <label class="f" for="sB" style="width:130px">الراتب<input type="number" id="sB" value="${base}"></label>
+      <label class="f" for="sAdd" style="width:120px">إضافي<input type="number" id="sAdd" value="0"></label>
+      <label class="f" for="sDed" style="width:120px">خصم<input type="number" id="sDed" value="0"></label>
+      <label class="f" for="sMeth" style="width:160px">الطريقة<select id="sMeth">${["تحويل بنكي", "نقد"].map(x => `<option>${x}</option>`).join("")}</select></label>
+      <label class="f" for="sD" style="width:160px">تاريخ الصرف<input type="date" id="sD" value="${today()}"></label>
+    </div>
+    <label class="f" for="sNote">ملاحظة<input type="text" id="sNote" placeholder="مثل: خصم غياب محاضرة"></label>
+    <div class="row"><b id="sNet"></b><button class="btn gold" id="sGo">تسجيل الصرف وطباعة السند</button></div>`;
+  $("#modal").classList.add("on");
+  const net = () => Math.round(((Number($("#sB").value) || 0) + (Number($("#sAdd").value) || 0) - (Number($("#sDed").value) || 0)) * 100) / 100;
+  const upd = () => $("#sNet").textContent = "الصافي: " + SAR(net()); upd();
+  ["sB", "sAdd", "sDed"].forEach(id => $("#" + id).oninput = upd);
+  $("#sx").onclick = closeModal;
+  $("#sGo").onclick = async () => {
+    if (net() <= 0) return toast("الصافي لازم يكون أكبر من صفر");
+    const w = openPrint(); if (!w) return;
+    const r = {tid, name: t.name, month: m, base: Number($("#sB").value) || 0, bonus: Number($("#sAdd").value) || 0, deduct: Number($("#sDed").value) || 0, net: net(), method: $("#sMeth").value, paidDate: $("#sD").value || today(), note: $("#sNote").value.trim(), by: S.adminRole, at: new Date().toISOString()};
+    try { await setDoc(ref(`salaryPays/${m}_${tid}`), r); logAction("صرف راتب", `${t.name} · ${m} · ${SAR(r.net)}`); fillPrint(w, `سند صرف راتب ${t.name}`, [{html: salaryHTML(r)}]); closeModal(); }
+    catch (e) { w.close(); handleWriteErr(e); }
+  };
+}
+function salaryHTML(r){
+  return `<h1>سند صرف راتب</h1>
+  <div class="info"><div><b>المدرب/ة:</b> ${esc(r.name)}</div><div><b>عن شهر:</b> ${esc(r.month)}</div><div><b>تاريخ الصرف:</b> ${esc(bothDates(r.paidDate))}</div><div><b>الطريقة:</b> ${esc(r.method)}</div></div>
+  <table><tbody><tr><td class="n"><b>الراتب</b></td><td>${SAR(r.base)}</td></tr><tr><td class="n"><b>إضافي</b></td><td>${SAR(r.bonus)}</td></tr><tr><td class="n"><b>خصم</b></td><td>${SAR(r.deduct)}</td></tr><tr><td class="n"><b>الصافي</b></td><td style="font-size:16px"><b>${SAR(r.net)}</b></td></tr></tbody></table>
+  ${r.note ? `<p>ملاحظة: ${esc(r.note)}</p>` : ""}
+  <div class="sig"><div>المالية</div><div>المستلم<br><small>الاسم والتوقيع</small></div></div>`;
+}
+function studentFin(el){
+  const acc = S.myFin; if (!acc) { el.innerHTML = `<div class="card empty">ما فيه حساب مالي.</div>`; return; }
+  const st = accStatus(acc, S.myPay || []), pays = (S.myPay || []).filter(p => !p.void).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  el.innerHTML = `<div class="card"><h2>المالية</h2><p class="muted" style="margin-top:0">${PLANS[acc.plan] || ""}${acc.discount ? ` · خصم ${SAR(acc.discount)}` : ""}</p>
+    <div class="stats"><div class="stat"><div class="n">${SAR(st.net)}</div><div class="l">الرسوم</div></div><div class="stat"><div class="n">${SAR(st.paid)}</div><div class="l">المدفوع</div></div><div class="stat"><div class="n">${SAR(st.remaining)}</div><div class="l">المتبقي</div></div><div class="stat"><div class="n" style="color:${st.overdue ? "var(--abs)" : "inherit"}">${SAR(st.overdue)}</div><div class="l">متأخر</div></div></div>
+    ${st.next ? `<div class="notice" style="margin-top:10px">الدفعة القادمة: <b>${SAR(st.next.amount)}</b> بتاريخ ${esc(fmtDate(st.next.due))}</div>` : ""}</div>
+  <div class="card"><h2>جدول الدفعات</h2><div class="tbl"><table><thead><tr><th>#</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>${st.sched.map((i, k) => `<tr><td>${i.label ? esc(i.label) : k + 1}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td><span class="pill ${INST_PILL[i.st]}">${INST_ST[i.st]}</span></td></tr>`).join("")}</tbody></table></div></div>
+  <div class="card"><h2>السندات</h2><div class="list">${pays.map(p => `<div class="item"><div class="grow"><div class="t">${SAR(p.amount)}</div><div class="muted">سند ${esc(p.receiptNo)} · ${dH(p.date)} · ${esc(p.method)}</div></div><button class="btn sm" data-myrc="${esc(p.id)}">طباعة</button></div>`).join("") || `<span class="muted">ما فيه دفعات</span>`}</div></div>`;
+  el.querySelectorAll("[data-myrc]").forEach(b => b.onclick = () => { const p = pays.find(x => x.id === b.dataset.myrc); const w = openPrint(); fillPrint(w, `سند قبض ${p.receiptNo}`, [{html: receiptHTML(p, acc, null)}]); });
+}
+
 /* trainers tab */
 function trainerLoginMap(over){
   const map = {};
@@ -2037,7 +2624,7 @@ function trainerLoginMap(over){
 const nextTrainerNum = (over) => String(Math.max(1000, ...Object.values(over || S.trainers).map(t => Number(t.num) || 0)) + 1);
 /* give every trainer a number and publish number -> login only (no names) */
 async function syncTrainerNumbers(){
-  if (S._trainerSynced || S.role !== "admin" || RO() || !S.loaded.trainers) return;
+  if (S._trainerSynced || S.role !== "admin" || RO() || FIN() || !S.loaded.trainers) return;
   S._trainerSynced = true;
   const all = clone(S.trainers);
   const missing = Object.values(all).filter(t => !t.num).sort((a,b) => a.name.localeCompare(b.name, "ar"));
@@ -2149,13 +2736,15 @@ function adminReport(el){
     S.unsubReport = onSnapshot(query(collection(db, "att"), where("groupId", "==", S.aReportGroup)), snap => { S.aReport = snap.docs.map(d => d.data()); if (S.view === "admin" && S.aTab === "report") render(); }, () => {});
   }
   const g = S.groups[S.aReportGroup], docs = countable(S.aReport), th = TH();
-  const cand = (g.students || []).filter(s => s.sid).map(s => { const st = absStats(g, s.id, docs); const pct = Math.round((100 - st.absPct) * 10) / 10; return {s, st, pct, ok: docs.length > 0 && pct >= th.certMin, c: (S.certs || {})[`${s.sid}_${g.id}`]}; });
+  const needFee = !!(S.sys && S.sys.certNeedsFee);
+  const feeOf = num => { const f = (S.finClear || {})[num]; return !needFee ? {ok: true} : !f ? {ok: false, why: "ما له حساب مالي"} : f.remaining > 0 ? {ok: false, why: "عليه " + SAR(f.remaining)} : {ok: true}; };
+  const cand = (g.students || []).filter(s => s.sid).map(s => { const st = absStats(g, s.id, docs); const pct = Math.round((100 - st.absPct) * 10) / 10; const att = docs.length > 0 && pct >= th.certMin, fee = feeOf(s.sid); return {s, st, pct, att, fee, ok: att && fee.ok, c: (S.certs || {})[`${s.sid}_${g.id}`]}; });
   const toIssue = cand.filter(x => x.ok && !(x.c && !x.c.revoked));
   $("#rbody").innerHTML = `<div class="card"><div class="row" style="margin-bottom:10px"><button class="btn pri sm" id="rPdf">طباعة / PDF</button><button class="btn sm" id="rXls">تنزيل Excel</button></div>${matrixTable(g, S.aReport)}</div>
   <div class="card"><h2>شهادات الحضور</h2>
-    <p class="muted" style="margin-top:0">يستحق الشهادة من حضوره ${th.certMin}% أو أكثر. كل شهادة عليها QR للتحقق منها.</p>
+    <p class="muted" style="margin-top:0">يستحق الشهادة من حضوره ${th.certMin}% أو أكثر${needFee ? "، وسدّد رسومه كاملة" : ""}. كل شهادة عليها QR للتحقق منها.</p>
     ${docs.length ? `<div class="tbl"><table><thead><tr><th class="nm">الطالب</th><th>الحضور</th><th>الحالة</th><th></th></tr></thead><tbody>
-      ${cand.map(x => `<tr><td class="nm">${esc(x.s.name)}</td><td>${x.pct}%</td><td>${x.c && !x.c.revoked ? `<span class="pill p">صادرة · ${esc(x.c.code)}</span>` : x.ok ? `<span class="pill">مستحق</span>` : `<span class="pill a">غير مستحق</span>`}</td>
+      ${cand.map(x => `<tr><td class="nm">${esc(x.s.name)}</td><td>${x.pct}%</td><td>${x.c && !x.c.revoked ? `<span class="pill p">صادرة · ${esc(x.c.code)}</span>` : x.ok ? `<span class="pill">مستحق</span>` : !x.att ? `<span class="pill a">الحضور أقل من ${th.certMin}%</span>` : `<span class="pill l">موقوفة مالياً · ${esc(x.fee.why)}</span>`}</td>
         <td>${x.c && !x.c.revoked ? `<button class="btn sm" data-pc="${esc(x.c.key)}">طباعة</button> <button class="btn sm danger" data-rc="${esc(x.c.key)}">إلغاء</button>` : ""}</td></tr>`).join("")}</tbody></table></div>
       <div class="row" style="margin-top:10px">${toIssue.length ? `<button class="btn gold" id="cIssue">إصدار شهادات المستحقين (${toIssue.length}) وطباعتها</button>` : ""}${cand.some(x => x.c && !x.c.revoked) ? `<button class="btn sm" id="cAll">طباعة كل الشهادات الصادرة</button>` : ""}</div>`
     : `<p class="muted" style="margin:0">ما فيه تحضير مسجل لهذا المقرر.</p>`}
