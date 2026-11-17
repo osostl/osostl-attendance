@@ -2,42 +2,220 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() { return request.auth != null; }
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    // login emails look like: t-badr.v1@osostl.local / st-20260001.v1@osostl.local
+    function localPart() { return request.auth.token.email.split('@')[0].split('[.]')[0]; }
+
     function isAdmin() {
-      return signedIn() && request.auth.token.email in ['admin@asas.local', 'academic@asas.local'];
+      return signedIn() && request.auth.token.email in ['admin@osostl.local', 'acadmic@osostl.local'];
     }
-    // the trainer who owns this group
+    // a trainer is only who their trainers/{id} document says
+    function isTrainer() {
+      return signedIn() && localPart().matches('t-.+')
+        && exists(/databases/$(database)/documents/trainers/$(localPart()))
+        && get(/databases/$(database)/documents/trainers/$(localPart())).data.uid == request.auth.uid
+        && get(/databases/$(database)/documents/trainers/$(localPart())).data.get('disabled', false) != true;
+    }
+    function myNum() { return localPart().split('-')[1]; }
+    // a student is only who their students/{num} document says
+    function isStudent() {
+      return signedIn() && localPart().matches('st-[0-9]+')
+        && exists(/databases/$(database)/documents/students/$(myNum()))
+        && get(/databases/$(database)/documents/students/$(myNum())).data.uid == request.auth.uid
+        && get(/databases/$(database)/documents/students/$(myNum())).data.get('disabled', false) != true;
+    }
+    function isStaff() { return isAdmin() || isTrainer(); }
+    // read-only account for a supervising body: reads attendance, groups, grades; writes nothing
+    function isAuditor() { return signedIn() && request.auth.token.email == 'audit@osostl.local'; }
+    function canView() { return isStaff() || isAuditor(); }
+    // finance employee (and the general administration) manage fees, payments and salaries
+    function isFinance() { return signedIn() && request.auth.token.email == 'finance@osostl.local'; }
+    function finAccess() { return isFinance() || (signedIn() && request.auth.token.email == 'admin@osostl.local'); }
     function ownsGroup(groupId, trainerId) {
-      return signedIn()
-        && get(/databases/$(database)/documents/groups/$(groupId)).data.trainerId == trainerId
-        && get(/databases/$(database)/documents/trainers/$(trainerId)).data.uid == request.auth.uid;
+      return isTrainer() && localPart() == trainerId
+        && get(/databases/$(database)/documents/groups/$(groupId)).data.trainerId == trainerId;
     }
 
-    // names shown on the trainer login screen (no codes, no students)
+    // ---- system settings (public/system), set by the admin ----
+    function sysDoc() { return /databases/$(database)/documents/public/system; }
+    function notMaint() { return !exists(sysDoc()) || get(sysDoc()).data.get('maintenance', false) != true; }
+    function lockH() { return exists(sysDoc()) ? get(sysDoc()).data.get('lockHours', -1) : -1; }
+    // midnight of a 'YYYY-MM-DD' date in Riyadh (UTC+3)
+    function dayStart(d) {
+      return timestamp.date(int(d.split('-')[0]), int(d.split('-')[1]), int(d.split('-')[2])) - duration.value(3, 'h');
+    }
+    // trainers may edit a day's attendance from that day until lockHours after it ends
+    function withinLock(d) {
+      return request.time >= dayStart(d) - duration.value(1, 'h')
+        && (lockH() < 0 || request.time < dayStart(d) + duration.value(24 + lockH(), 'h'));
+    }
+
+    // login screens and system settings: public read, admin write
     match /public/{docId} {
       allow read: if true;
       allow write: if isAdmin();
     }
+    // announcements: ann/all for everyone, ann/trainers for staff, ann/students for students
+    match /ann/{aud} {
+      allow read: if aud == 'all' || (aud == 'trainers' && canView()) || (aud == 'students' && (isAdmin() || isStudent()));
+      allow write: if isAdmin();
+    }
+    // audit log: staff append their own entries with the server time; nobody edits or deletes
+    match /logs/{id} {
+      allow read: if isAdmin();
+      allow create: if (isStaff() || isFinance())
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.keys().hasOnly(['at', 'uid', 'role', 'who', 'action', 'details']);
+      allow update, delete: if false;
+    }
     match /trainers/{id} {
-      allow read: if signedIn();
+      allow read: if canView() || isStudent() || isFinance();
       allow write: if isAdmin();
     }
     match /groups/{id} {
-      allow read: if signedIn();
+      allow read: if canView() || isFinance() || (isStudent() && myNum() in resource.data.get('memberNums', []));
+      allow create, delete: if isAdmin();
+      // a trainer may only change the Teams link and recordings of their own course
+      allow update: if isAdmin() || (
+        notMaint() && isTrainer() && localPart() == resource.data.trainerId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['meetLink', 'recordings'])
+      );
+    }
+    match /students/{num} {
+      allow read: if canView() || isFinance() || (isStudent() && num == myNum());
       allow write: if isAdmin();
     }
-    // trainer codes: academic affairs only
-    match /secrets/{id} {
-      allow read, write: if isAdmin();
-    }
+    // login codes and phone numbers: academic affairs only
+    match /secrets/{id} { allow read, write: if isAdmin(); }
+    match /studentSecrets/{id} { allow read, write: if isAdmin(); }
+
     // attendance: one document per group per day, id = groupId_date
     match /att/{id} {
-      allow read: if signedIn();
+      allow read: if canView() || (isStudent() && myNum() in resource.data.get('memberNums', []));
       allow delete: if isAdmin();
       allow create, update: if isAdmin() || (
         id == request.resource.data.groupId + '_' + request.resource.data.date
         && ownsGroup(request.resource.data.groupId, request.resource.data.trainerId)
+        && notMaint()
+        && withinLock(request.resource.data.date)
       );
+    }
+
+    // grades: trainer drafts and submits, academic affairs approves or returns
+    match /grades/{gid} {
+      allow read: if canView();
+      allow delete: if isAdmin();
+      allow create, update: if isAdmin() || (
+        gid == request.resource.data.groupId
+        && ownsGroup(request.resource.data.groupId, request.resource.data.trainerId)
+        && notMaint()
+        && request.resource.data.status in ['draft', 'submitted']
+        && (resource == null || resource.data.status in ['draft', 'returned'])
+      );
+    }
+    // a student pressed "join lecture": one record per student per course per day
+    match /joins/{id} {
+      allow read: if isStaff() || (isStudent() && resource.data.num == myNum());
+      allow create: if isStudent() && notMaint()
+        && request.resource.data.num == myNum()
+        && id == request.resource.data.groupId + '_' + request.resource.data.date + '_' + myNum()
+        && myNum() in get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.get('memberNums', []);
+      allow delete: if isAdmin();
+    }
+
+    // end-of-program satisfaction survey: one anonymous-to-staff answer per student per survey round
+    match /surveys/{id} {
+      allow read: if isAdmin() || isAuditor() || (isStudent() && resource.data.num == myNum());
+      allow create: if isStudent() && notMaint()
+        && get(/databases/$(database)/documents/public/survey).data.open == true
+        && request.resource.data.sid == get(/databases/$(database)/documents/public/survey).data.id
+        && request.resource.data.num == myNum()
+        && id == request.resource.data.sid + '_' + myNum()
+        && request.resource.data.comment.size() <= 800;
+      allow delete: if isAdmin();
+    }
+
+    // absence excuses: the student files one per absence (image compressed inside the document)
+    match /excuses/{id} {
+      allow read: if isAdmin() || (isStudent() && resource.data.num == myNum());
+      allow create: if isStudent() && notMaint()
+        && request.resource.data.num == myNum()
+        && id == myNum() + '_' + request.resource.data.groupId + '_' + request.resource.data.date
+        && request.resource.data.status == 'pending'
+        && request.resource.data.get('img', '').size() < 900000
+        && request.resource.data.reason.size() <= 500
+        && myNum() in get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.get('memberNums', []);
+      allow update: if isAdmin();
+      allow delete: if isAdmin() || (isStudent() && resource.data.num == myNum() && resource.data.status == 'pending');
+    }
+    // warnings issued by academic affairs; the student sees their own
+    match /warnings/{id} {
+      allow read: if isAdmin() || isAuditor() || (isStudent() && resource.data.num == myNum());
+      allow write: if isAdmin();
+    }
+    // course evaluations: one per student per course, only while open; trainers never read them
+    match /evals/{id} {
+      allow read: if isAdmin() || (isStudent() && resource.data.num == myNum());
+      allow create: if isStudent() && notMaint()
+        && request.resource.data.num == myNum()
+        && id == request.resource.data.groupId + '_' + myNum()
+        && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.get('evalOpen', false) == true
+        && myNum() in get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.get('memberNums', []);
+      allow update, delete: if isAdmin();
+    }
+
+    // attendance certificates: anyone with the code can verify one; listing is admin or the student's own
+    match /certs/{code} {
+      allow get: if true;
+      allow list: if isAdmin() || isAuditor() || (isStudent() && resource.data.num == myNum());
+      allow write: if isAdmin();
+    }
+
+    // ---- finance ----
+    match /fin/{doc} { allow read, write: if finAccess(); }
+    match /finAccounts/{num} {
+      allow read: if finAccess() || (isStudent() && num == myNum());
+      allow write: if finAccess();
+    }
+    // payments are never deleted: a wrong one is voided with a reason
+    match /payments/{id} {
+      allow read: if finAccess() || (isStudent() && resource.data.num == myNum());
+      allow create: if finAccess() && request.resource.data.void == false && request.resource.data.amount > 0;
+      allow update: if finAccess()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['void', 'voidReason', 'voidBy', 'voidAt'])
+        && request.resource.data.void == true;
+      allow delete: if false;
+    }
+    match /salaryPays/{id} { allow read, write: if finAccess(); }
+    // expenses and partner commission payouts: voided with a reason, never deleted
+    match /expenses/{id} {
+      allow read: if finAccess();
+      allow create: if finAccess() && request.resource.data.void == false && request.resource.data.amount > 0;
+      allow update: if finAccess() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['void', 'voidReason', 'voidBy', 'voidAt']);
+    }
+    match /commPays/{id} {
+      allow read: if finAccess();
+      allow create: if finAccess() && request.resource.data.void == false && request.resource.data.amount > 0;
+      allow update: if finAccess() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['void', 'voidReason', 'voidBy', 'voidAt']);
+    }
+    // remaining balance per student, kept in sync by finance; academic affairs reads it for certificates
+    match /finClear/{num} {
+      allow read: if isAdmin() || isFinance();
+      allow write: if finAccess();
+    }
+
+
+    // term archives: summaries kept after a term is closed
+    match /archives/{id} {
+      allow read: if isAdmin() || isAuditor();
+      allow write: if isAdmin();
+    }
+
+    // approved grades, one per student per course: the only grades a student sees
+    match /results/{id} {
+      allow read: if isAdmin() || isAuditor() || (isStudent() && resource.data.num == myNum());
+      allow write: if isAdmin();
     }
   }
 }
