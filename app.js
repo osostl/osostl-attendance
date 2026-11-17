@@ -145,7 +145,7 @@ function startData(){
   if (S.role === "admin") {
     S.subs.push(onSnapshot(collection(db, "secrets"), snap => { S.secrets = {}; snap.docs.forEach(d => S.secrets[d.id] = d.data().code); afterData(); }, () => {}));
     S.subs.push(onSnapshot(collection(db, "students"), snap => { S.students = {}; snap.docs.forEach(d => S.students[d.id] = d.data()); afterData(); }, () => {}));
-    S.subs.push(onSnapshot(collection(db, "studentSecrets"), snap => { S.stSecrets = {}; snap.docs.forEach(d => S.stSecrets[d.id] = d.data().code); afterData(); }, () => {}));
+    S.subs.push(onSnapshot(collection(db, "studentSecrets"), snap => { S.stSecrets = {}; S.stPhones = {}; snap.docs.forEach(d => { S.stSecrets[d.id] = d.data().code; if (d.data().phone) S.stPhones[d.id] = d.data().phone; }); afterData(); }, () => {}));
   }
 }
 function fail(err){ console.error(err); $("#app").innerHTML = `<div class="notice err">تعذّر تحميل البيانات. ${err && err.code === "permission-denied" ? "حسابك ما عنده صلاحية، أو قواعد الحماية في Firebase تحتاج تحديث." : "تأكد من الاتصال وحدّث الصفحة."}</div>`; }
@@ -162,7 +162,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab"));
 }
 
 /* ---------- top bar ---------- */
@@ -666,11 +666,11 @@ function writeGroup(gid, d){
 }
 
 function renderAdmin(app){
-  const tabs = [["dash","لوحة اليوم"],["groups","المقررات والطلاب"],["students","الطلاب"],["trainers","المدربين والرموز"],["grades","الدرجات"],["report","التقارير"]];
+  const tabs = [["dash","لوحة اليوم"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["report","التقارير"]];
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
-  ({dash: adminDash, groups: adminGroups, students: adminStudents, trainers: adminTrainers, grades: adminGrades, report: adminReport})[S.aTab]($("#ab"));
+  ({dash: adminDash, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, report: adminReport})[S.aTab]($("#ab"));
 }
 
 function adminDash(el){
@@ -679,6 +679,8 @@ function adminDash(el){
   }
   const byG = {}; S.aDash.forEach(d => byG[d.groupId] = d);
   const gs = sortedGroups();
+  const absentToday = [];
+  gs.forEach(g => { const d = byG[g.id]; if (!d) return; (g.students || []).forEach(s => { const r = d.rec && d.rec[s.id]; if (r && r.st === "a") absentToday.push({name: s.name, sid: s.sid, course: g.course}); }); });
   let pres = 0, abs = 0, done = 0;
   const rows = gs.map(g => {
     const d = byG[g.id], n = (g.students||[]).length;
@@ -698,7 +700,13 @@ function adminDash(el){
       <div class="stat"><div class="n">${nStu}</div><div class="l">طالب وطالبة</div></div>
     </div></div>
   ${nStu ? "" : `<div class="notice">ما فيه حسابات طلاب بعد. روح لتبويب "الطلاب" واستورد ملف asas-students.json.</div>`}
-  <div class="tbl"><table><thead><tr><th class="nm">المقرر</th><th class="nm">المدرب/ة</th><th>العدد</th><th>حاضر</th><th>غائب</th><th>مستأذن</th><th>الحالة</th></tr></thead><tbody>${rows || `<tr><td colspan="7" class="empty">ما فيه مقررات بعد</td></tr>`}</tbody></table></div>`;
+  <div class="tbl"><table><thead><tr><th class="nm">المقرر</th><th class="nm">المدرب/ة</th><th>العدد</th><th>حاضر</th><th>غائب</th><th>مستأذن</th><th>الحالة</th></tr></thead><tbody>${rows || `<tr><td colspan="7" class="empty">ما فيه مقررات بعد</td></tr>`}</tbody></table></div>
+  ${absentToday.length ? `<div class="card"><h2>غياب اليوم (${absentToday.length})</h2>
+    <p class="muted" style="margin-top:0">اضغط واتساب، وتفتح محادثة الطالب ورسالة الغياب جاهزة.</p>
+    <div class="list">${absentToday.map(a => `<div class="item"><div class="grow"><div class="t">${esc(a.name)}</div><div class="muted">${esc(a.course)}${a.sid ? " · " + esc(a.sid) : ""}</div></div>
+      ${a.sid && (S.stPhones || {})[a.sid] ? "" : `<span class="pill">بدون جوال</span>`}
+      ${a.sid ? `<button class="btn sm gold" data-wabs="${esc(a.sid)}" data-course="${esc(a.course)}">واتساب</button>` : ""}</div>`).join("")}</div></div>` : ""}`;
+  el.querySelectorAll("[data-wabs]").forEach(b => b.onclick = () => openWhatsApp(b.dataset.wabs, {type: "absence", course: b.dataset.course}));
 }
 
 function adminGroups(el){
@@ -853,8 +861,30 @@ function adminStudents(el){
       return `<div class="item"><div class="grow"><div class="t">${esc(s.name)} <span class="pill ${s.gender}">${GENDER[s.gender]}</span></div>
         <div class="muted">${gs.length} مقرر${gs.length ? " · " + gs.map(g => esc(g.course)).join("، ") : ""}</div></div>
         <span class="code">${esc(s.num)}</span><span class="code">${esc(S.stSecrets[s.num] || "••••••")}</span>
-        <button class="btn sm" data-scopy="${esc(s.num)}">نسخ</button><button class="btn sm" data-snew="${esc(s.num)}">رمز جديد</button></div>`;
+        <span class="pill ${(S.stPhones || {})[s.num] ? "p" : ""}" dir="ltr">${esc((S.stPhones || {})[s.num] || "بدون جوال")}</span>
+        <button class="btn sm gold" data-wa="${esc(s.num)}">واتساب</button>
+        <button class="btn sm" data-scopy="${esc(s.num)}">نسخ</button><button class="btn sm" data-snew="${esc(s.num)}">رمز جديد</button><button class="btn sm danger" data-sdel="${esc(s.num)}">حذف</button></div>`;
     }).join("") || `<div class="card empty">${list.length ? "ما فيه نتائج" : "ما فيه طلاب بعد. استورد الملف من تحت."}</div>`;
+    el.querySelectorAll("[data-wa]").forEach(b => b.onclick = () => openWhatsApp(b.dataset.wa));
+    el.querySelectorAll("[data-sdel]").forEach(b => b.onclick = async () => {
+      const num = b.dataset.sdel, st = S.students[num];
+      if (!b.dataset.sure) { b.dataset.sure = "1"; b.textContent = "متأكد؟ يحذف من كل المقررات"; return; }
+      b.disabled = true;
+      try {
+        const bt = writeBatch(db);
+        Object.values(S.groups).filter(g => (g.memberNums || []).includes(num)).forEach(g => {
+          const d = clone(g); delete d.id; d.students = (d.students || []).filter(x => x.sid !== num); d.memberNums = memberNums(d.students);
+          bt.set(ref("groups/" + g.id), d);
+        });
+        const rs = await getDocs(query(collection(db, "results"), where("num", "==", num)));
+        rs.docs.forEach(x => bt.delete(x.ref));
+        const pubSnap = await getDoc(ref("public/studentLogin")); const map = (pubSnap.exists() && pubSnap.data().map) || {}; delete map[num];
+        bt.set(ref("public/studentLogin"), {map});
+        bt.delete(ref("students/" + num)); bt.delete(ref("studentSecrets/" + num));
+        await bt.commit();
+        delete S.students[num]; toast(`انحذف ${st ? st.name : num}`); render();
+      } catch (e) { handleWriteErr(e); b.disabled = false; }
+    });
     el.querySelectorAll("[data-scopy]").forEach(b => b.onclick = async () => {
       const s = S.students[b.dataset.scopy];
       const msg = `${s.name}\nرقمك الأكاديمي: ${s.num}\nرمز الدخول: ${S.stSecrets[s.num] || "—"}\nبوابة الطلاب: ${location.href.split("#")[0].split("?")[0]}`;
@@ -981,6 +1011,180 @@ async function runStudentImport(){
   } catch (e) { console.error(e); log("توقف: " + accountErr(e)); }
   S._busy = false; const b = $("#upB"); if (b) b.disabled = false;
   const keep = $("#upLog") ? $("#upLog").textContent : ""; render(); if ($("#upLog")) $("#upLog").textContent = keep;
+}
+
+/* ---------- WhatsApp (opens a ready message; the admin presses send) ---------- */
+function normPhone(p){
+  let d = digits(p).replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.startsWith("05") && d.length === 10) d = "966" + d.slice(1);
+  else if (d.startsWith("5") && d.length === 9) d = "966" + d;
+  return d;
+}
+const SIGN = "\n\nالشؤون الأكاديمية\nمعهد أسس التقنية والقانون";
+async function waText(num, type, opt){
+  const st = S.students[num] || {}, hi = `${st.gender === "f" ? "المتدربة" : "المتدرب"}: ${st.name}\nالرقم الأكاديمي: ${num}\n\n`;
+  const gs = Object.values(S.groups).filter(g => (g.memberNums || []).includes(num)).sort((a,b) => (a.course||"").localeCompare(b.course||"","ar"));
+  if (type === "absence") return `${hi}نفيدكم بتسجيل غيابكم عن محاضرة (${opt.course}) اليوم ${fmtDate(today())}.\nللاستفسار تواصلوا مع الشؤون الأكاديمية.${SIGN}`;
+  if (type === "login") return `${hi}بيانات دخولكم لبوابة الطلاب:\nالرقم الأكاديمي: ${num}\nرمز الدخول: ${S.stSecrets[num] || "—"}\nالرابط: ${location.href.split("#")[0].split("?")[0]}${SIGN}`;
+  if (type === "note") return `${hi}${opt.note || ""}${SIGN}`;
+  if (type === "att") {
+    const snap = await getDocs(query(collection(db, "att"), where("memberNums", "array-contains", num)));
+    const docs = snap.docs.map(d => d.data());
+    const lines = gs.map(g => {
+      const e = (g.students || []).find(s => s.sid === num); const ds = docs.filter(d => d.groupId === g.id);
+      if (!ds.length) return `• ${g.course}: ما بدأ التحضير`;
+      const k = {p:0,l:0,a:0,e:0}; ds.forEach(d => { const r = e && d.rec && d.rec[e.id]; if (r && r.st) k[r.st]++; else k.a++; });
+      return `• ${g.course}: حضور ${k.p + k.l} من ${ds.length} (${Math.round((k.p + k.l) / ds.length * 100)}%)، غياب ${k.a}${k.l ? `، تأخير ${k.l}` : ""}${k.e ? `، استئذان ${k.e}` : ""}`;
+    });
+    return `${hi}سجل الحضور حتى ${fmtDate(today())}:\n${lines.join("\n") || "ما فيه مقررات"}${SIGN}`;
+  }
+  if (type === "grades") {
+    const snap = await getDocs(query(collection(db, "results"), where("num", "==", num)));
+    const res = {}; snap.docs.forEach(d => { const r = d.data(); res[r.groupId] = r; });
+    const lines = gs.map(g => res[g.id] ? `• ${g.course}: ${res[g.id].mark} من 100 (${letter(res[g.id].mark)})` : `• ${g.course}: لم تُعتمد بعد`);
+    return `${hi}الدرجات المعتمدة:\n${lines.join("\n") || "ما فيه مقررات"}${SIGN}`;
+  }
+  return hi + SIGN;
+}
+function openWhatsApp(num, preset){
+  const st = S.students[num]; if (!st) return;
+  S._modalGroup = null;
+  const phone = (S.stPhones || {})[num] || "";
+  $("#modalBox").innerHTML = `
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">واتساب · ${esc(st.name)}</h2><button class="btn sm" id="wx">إغلاق</button></div>
+    <div class="row">
+      <label class="f grow" for="wp">رقم الجوال<input type="tel" id="wp" dir="ltr" value="${esc(phone)}" placeholder="05xxxxxxxx"></label>
+      <button class="btn sm" id="wpSave" style="align-self:flex-end">حفظ الرقم</button>
+    </div>
+    <div class="row">
+      <button class="btn sm" data-wt="att">سجل الحضور</button>
+      <button class="btn sm" data-wt="grades">الدرجات</button>
+      <button class="btn sm" data-wt="login">بيانات الدخول</button>
+      <button class="btn sm" data-wt="note">ملاحظة</button>
+    </div>
+    <label class="f" for="wm">الرسالة (تقدر تعدّلها)<textarea id="wm" style="min-height:200px"></textarea></label>
+    <div class="row"><a class="btn pri" id="wgo" target="_blank" rel="noopener">فتح واتساب وإرسال</a><span class="muted" id="whint"></span></div>
+    <div class="card" style="background:var(--bg)">
+      <h3>إرفاق ملف (اختياري)</h3>
+      <p class="muted" style="margin-top:0">مثل خطاب أو تقرير PDF أو صورة. من الجوال يفتح لك قائمة المشاركة: اختر واتساب ثم الطالب.</p>
+      <div class="row"><input type="file" id="wf" class="grow"><button class="btn sm gold" id="wshare">مشاركة الملف مع الرسالة</button></div>
+    </div>`;
+  $("#modal").classList.add("on");
+  $("#wx").onclick = closeModal;
+  const link = () => {
+    const p = normPhone($("#wp").value), a = $("#wgo");
+    if (!/^9665\d{8}$/.test(p)) { a.removeAttribute("href"); a.classList.add("disabled"); $("#whint").textContent = "اكتب رقم جوال سعودي صحيح"; return; }
+    a.href = `https://wa.me/${p}?text=${encodeURIComponent($("#wm").value)}`; $("#whint").textContent = "";
+  };
+  const fill = async (type, opt) => {
+    $("#wm").value = "جاري التجهيز…";
+    try { $("#wm").value = await waText(num, type, opt || {}); } catch (e) { console.error(e); $("#wm").value = ""; toast("تعذّر تجهيز الرسالة"); }
+    if (type === "note") { const t = $("#wm"); t.focus(); t.setSelectionRange(t.value.indexOf("\n\n") + 2, t.value.indexOf("\n\n") + 2); }
+    link();
+  };
+  $("#modalBox").querySelectorAll("[data-wt]").forEach(b => b.onclick = () => fill(b.dataset.wt));
+  $("#wm").oninput = link; $("#wp").oninput = link;
+  $("#wpSave").onclick = async () => {
+    const p = normPhone($("#wp").value);
+    if (!/^9665\d{8}$/.test(p)) return toast("رقم الجوال غير صحيح");
+    try { await setDoc(ref("studentSecrets/" + num), {phone: p}, {merge: true}); S.stPhones = {...(S.stPhones || {}), [num]: p}; $("#wp").value = p; toast("انحفظ الرقم"); link(); }
+    catch (e) { handleWriteErr(e); }
+  };
+  $("#wgo").onclick = e => { if (!$("#wgo").getAttribute("href")) { e.preventDefault(); toast("اكتب رقم جوال صحيح أولاً"); } };
+  $("#wshare").onclick = async () => {
+    const f = $("#wf").files[0]; if (!f) return toast("اختر الملف أولاً");
+    const data = {files: [f], text: $("#wm").value};
+    if (navigator.canShare && navigator.canShare(data)) {
+      try { await navigator.share(data); } catch (e) { if (e.name !== "AbortError") toast("تعذّرت المشاركة"); }
+    } else {
+      toast("هالجهاز ما يدعم مشاركة الملفات. افتح واتساب من الزر، وأرفق الملف من داخل المحادثة");
+    }
+  };
+  fill(preset ? preset.type : "att", preset);
+}
+
+/* bulk messages: prepare every message first, then open WhatsApp one student per click */
+function fillVars(t, num){
+  const st = S.students[num] || {};
+  return t.replace(/\{الاسم\}/g, st.name || "").replace(/\{الرقم\}/g, num).replace(/\{الرمز\}/g, S.stSecrets[num] || "—")
+          .replace(/\{الرابط\}/g, location.href.split("#")[0].split("?")[0]);
+}
+function adminMessages(el){
+  const q = S.msgQ;
+  const gs = sortedGroups();
+  if (q && q.items.length) {
+    const done = q.items.filter(i => i.sent).length, cur = q.items[q.idx];
+    el.innerHTML = `
+    <div class="card"><h2>الإرسال · ${done} من ${q.items.length}</h2>
+      <span class="bar" style="display:block;max-width:none"><i style="width:${Math.round(done / q.items.length * 100)}%"></i></span>
+      ${cur ? `<div class="item" style="margin-top:12px"><div class="grow"><div class="t">التالي: ${esc(cur.name)}</div><div class="muted" dir="ltr" style="text-align:right">${esc(cur.phone)}</div></div>
+        <a class="btn gold" id="qNext" href="https://wa.me/${cur.phone}?text=${encodeURIComponent(cur.text)}" target="_blank" rel="noopener">فتح واتساب (${q.idx + 1})</a>
+        <button class="btn sm" id="qSkip">تخطي</button></div>
+        <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">نص الرسالة</summary><pre style="white-space:pre-wrap;font-family:inherit">${esc(cur.text)}</pre></details>`
+      : `<div class="notice" style="margin-top:12px">خلصت القائمة.</div>`}
+      <div class="row" style="margin-top:12px"><button class="btn sm danger" id="qStop">${cur ? "إيقاف وإلغاء" : "رسالة جديدة"}</button></div>
+    </div>
+    <div class="list">${q.items.map((i, k) => `<div class="item" style="padding:8px 12px"><span class="grow">${k + 1}. ${esc(i.name)}</span><span class="pill ${i.sent ? "p" : i.skipped ? "a" : ""}">${i.sent ? "انفتح" : i.skipped ? "متخطى" : "بالانتظار"}</span></div>`).join("")}</div>`;
+    const adv = mark => { q.items[q.idx][mark] = true; q.idx++; while (q.idx < q.items.length && (q.items[q.idx].sent || q.items[q.idx].skipped)) q.idx++; };
+    if ($("#qNext")) $("#qNext").onclick = () => setTimeout(() => { adv("sent"); render(); }, 300);
+    if ($("#qSkip")) $("#qSkip").onclick = () => { adv("skipped"); render(); };
+    $("#qStop").onclick = () => { S.msgQ = null; render(); };
+    return;
+  }
+  el.innerHTML = `
+  <div class="card"><h2>الرسائل الجماعية</h2>
+    <p class="muted" style="margin-top:0">تختار المستلمين والرسالة، وبعدها تمر عليهم: كل طالب ضغطة تفتح محادثته ورسالته جاهزة، وأنت تضغط إرسال في واتساب.</p>
+    <div class="row">
+      <label class="f grow" for="mTo">المستلمون<select id="mTo"><option value="all">كل الطلاب</option><option value="m">الطلاب فقط</option><option value="f">الطالبات فقط</option>${gs.map(g => `<option value="g:${esc(g.id)}">${esc(g.course)} · ${esc(tName(g.trainerId))}</option>`).join("")}</select></label>
+      <label class="f grow" for="mType">الرسالة<select id="mType">
+        <option value="login">الرموز: بيانات الدخول لكل طالب</option>
+        <option value="custom">رسالة عامة</option>
+        <option value="att">سجل الحضور لكل طالب</option>
+        <option value="grades">الدرجات المعتمدة لكل طالب</option>
+      </select></label>
+    </div>
+    <label class="f" for="mText" style="margin-top:10px">نص الرسالة <span class="muted">(تقدر تستخدم {الاسم} و{الرقم} و{الرمز} و{الرابط})</span><textarea id="mText" style="min-height:170px"></textarea></label>
+    <div id="mInfo" class="muted" style="margin:8px 0"></div>
+    <div class="row"><button class="btn pri" id="mPrep">تجهيز الرسائل</button><button class="btn sm" id="mCopy">نسخ النص (لقائمة بث في واتساب)</button></div>
+  </div>`;
+  const presets = {
+    login: "السلام عليكم {الاسم}\n\nبيانات دخولكم لبوابة الطلاب:\nالرقم الأكاديمي: {الرقم}\nرمز الدخول: {الرمز}\nالرابط: {الرابط}" + SIGN,
+    custom: "السلام عليكم {الاسم}\n\n" + SIGN,
+    att: "(يتجهز سجل الحضور لكل طالب حسب بياناته)",
+    grades: "(تتجهز الدرجات المعتمدة لكل طالب حسب بياناته)",
+  };
+  const recips = () => {
+    const v = $("#mTo").value;
+    let nums = Object.keys(S.students);
+    if (v === "m" || v === "f") nums = nums.filter(n => S.students[n].gender === v);
+    if (v.startsWith("g:")) nums = (S.groups[v.slice(2)] || {}).memberNums || [];
+    return nums.sort();
+  };
+  const info = () => {
+    const nums = recips(), withP = nums.filter(n => (S.stPhones || {})[n]);
+    const miss = nums.filter(n => !(S.stPhones || {})[n]).map(n => (S.students[n] || {}).name).filter(Boolean);
+    $("#mInfo").innerHTML = `${withP.length} من ${nums.length} عندهم رقم جوال.${miss.length ? ` <span>بدون جوال: ${esc(miss.slice(0, 8).join("، "))}${miss.length > 8 ? ` و${miss.length - 8} غيرهم` : ""}</span>` : ""}`;
+  };
+  const setType = () => { const t = $("#mType").value; $("#mText").value = presets[t]; $("#mText").disabled = t === "att" || t === "grades"; };
+  $("#mTo").onchange = info; $("#mType").onchange = setType; setType(); info();
+  $("#mCopy").onclick = async () => { try { await navigator.clipboard.writeText($("#mText").value.replace(/\{الاسم\}/g, "").replace(/السلام عليكم \n/, "السلام عليكم\n")); toast("انتسخ النص"); } catch { toast("المتصفح منع النسخ"); } };
+  $("#mPrep").onclick = async () => {
+    const type = $("#mType").value, tpl = $("#mText").value;
+    const nums = recips().filter(n => /^9665\d{8}$/.test((S.stPhones || {})[n] || ""));
+    if (!nums.length) return toast("ما فيه مستلمين عندهم رقم جوال. أضف الأرقام من تبويب الطلاب");
+    $("#mPrep").disabled = true; S._busy = true;
+    const items = [];
+    try {
+      for (const [k, n] of nums.entries()) {
+        $("#mInfo").textContent = `تجهيز ${k + 1} من ${nums.length}…`;
+        const text = (type === "att" || type === "grades") ? await waText(n, type, {}) : fillVars(tpl, n);
+        items.push({num: n, name: S.students[n].name, phone: S.stPhones[n], text});
+      }
+      S.msgQ = {items, idx: 0};
+    } catch (e) { console.error(e); toast("تعذّر تجهيز الرسائل"); }
+    S._busy = false; render();
+  };
 }
 
 /* trainers tab */
