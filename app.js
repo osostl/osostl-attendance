@@ -113,6 +113,8 @@ const S = {
 if (!configured) {
   $("#app").innerHTML = `<div class="notice err">البوابة تحتاج إعدادات Firebase في ملف config.js.</div>`;
 } else {
+  onSnapshot(ref("public/stamp"), snap => { S.stamp = snap.exists() ? snap.data().img || "" : ""; }, () => {});
+  S.sigs = {}; ["director", "academic"].forEach(k => onSnapshot(ref("sigs/" + k), snap => { S.sigs[k] = snap.exists() ? snap.data().img || "" : ""; }, () => {}));
   onSnapshot(ref("public/site"), snap => { S.site = snap.exists() ? snap.data() : {}; licQR(); if (!S.authUser && S.view === "home") render(); }, () => { S.site = {}; });
   onSnapshot(ref("public/stats"), snap => { S.stats = snap.exists() ? snap.data() : null; if (!S.authUser && S.view === "home") render(); }, () => {});
   onSnapshot(ref("public/survey"), snap => { S.survey = snap.exists() ? snap.data() : null; if (S.role === "student" && !busyEditing()) render(); }, () => {});
@@ -133,6 +135,7 @@ if (!configured) {
       getDoc(ref("public/disabled")).then(snap => { if (snap.exists() && (snap.data().list || {})[myId]) { S.disabledMsg = true; signOut(auth); } }).catch(() => {});
     }
     startData();
+    getDoc(ref("sigs/finance")).then(x => { S.sigs.finance = x.exists() ? x.data().img || "" : ""; }).catch(() => {});
     S._loginLog = S.role !== "student";
     render();
   });
@@ -187,11 +190,11 @@ function startData(){
     S.subs.push(onSnapshot(collection(db, "warnings"), snap => { S.warnings = {}; snap.docs.forEach(d => S.warnings[d.id] = d.data()); afterData(); }, () => {}));
     S.subs.push(onSnapshot(collection(db, "secrets"), snap => { S.secrets = {}; S.trPhones = {}; snap.docs.forEach(d => { S.secrets[d.id] = d.data().code; if (d.data().phone) S.trPhones[d.id] = d.data().phone; }); afterData(); }, () => {}));
     S.subs.push(onSnapshot(collection(db, "students"), snap => { S.students = {}; snap.docs.forEach(d => S.students[d.id] = d.data()); afterData(); }, () => {}));
-    S.subs.push(onSnapshot(collection(db, "studentSecrets"), snap => { S.stSecrets = {}; S.stPhones = {}; snap.docs.forEach(d => { S.stSecrets[d.id] = d.data().code; if (d.data().phone) S.stPhones[d.id] = d.data().phone; }); afterData(); }, () => {}));
+    S.subs.push(onSnapshot(collection(db, "studentSecrets"), snap => { S.stSecrets = {}; S.stPhones = {}; S.stProf = {}; snap.docs.forEach(d => { const v = d.data(); S.stSecrets[d.id] = v.code; S.stProf[d.id] = v; if (v.phone) S.stPhones[d.id] = v.phone; }); afterData(); }, () => {}));
   }
 }
 function fail(err){ console.error(err); $("#app").innerHTML = `<div class="notice err">تعذّر تحميل البيانات. ${err && err.code === "permission-denied" ? "حسابك ما عنده صلاحية، أو قواعد الحماية في Firebase تحتاج تحديث." : "تأكد من الاتصال وحدّث الصفحة."}</div>`; }
-function stopAll(){ S.subs.forEach(u => u()); S.subs = []; stopAtt(); stopAdminSubs(); S.trainers = {}; S.groups = {}; S.secrets = {}; S.students = {}; S.stSecrets = {}; S.grades = {}; S.myStudent = null; S.myAtt = []; S.myResults = []; S.myExc = []; S.myWarn = []; S.myEvals = []; S.excuses = []; S.warnings = {}; S.sTab = "home"; S._trainerSynced = false; S.ann.trainers = []; S.ann.students = []; renderAnn(); }
+function stopAll(){ S.subs.forEach(u => u()); S.subs = []; S.courses = null; S._crsOpen = null; S.signReqs = null; stopAtt(); stopAdminSubs(); S.trainers = {}; S.groups = {}; S.secrets = {}; S.students = {}; S.stSecrets = {}; S.grades = {}; S.myStudent = null; S.myAtt = []; S.myResults = []; S.myExc = []; S.myWarn = []; S.myEvals = []; S.excuses = []; S.warnings = {}; S.sTab = "home"; S._trainerSynced = false; S.ann.trainers = []; S.ann.students = []; renderAnn(); }
 
 function afterData(){
   if (S._finModal && $("#modal").classList.contains("on") && S._finDraw && !busyEditing()) S._finDraw();
@@ -209,7 +212,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","evL","evD","accN","licU","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -1131,6 +1134,55 @@ th{background:#1F5136;color:#fff;font-weight:600}td.n{text-align:right}tr:nth-ch
 .cert img.logo{width:120px}.cert h1{font-size:30px;margin:8px 0 2px}.cert .en{color:#8a6d22;font-size:12px;letter-spacing:1px}
 .cert .who{font-size:26px;color:#1F5136;font-weight:700;margin:16px 0 6px}.cert p{font-size:15px;line-height:2}
 .cert .qr{position:absolute;bottom:20mm;left:22mm;text-align:center;font-size:9.5px;color:#555}.cert .qr svg{width:92px;height:92px}
+.cert{position:relative;min-height:178mm}
+.cert .sig3{grid-template-columns:1fr 36mm 1fr;align-items:end;margin:22px 32mm 0 32mm;gap:10px}.cert .sig3 .stc{border:0;padding:0;min-height:30mm;display:grid;place-items:center}
+.cert .stamp{width:32mm;transform:rotate(-8deg);opacity:.92}
+.cert .lic{position:absolute;bottom:12mm;right:0;left:0;text-align:center;font-size:9.5px;color:#777}
+.page.cards{padding:8mm 6mm}
+.cardsGrid{display:grid;grid-template-columns:repeat(2,85.6mm);gap:7mm 6mm;justify-content:center;align-content:start}
+.idc{width:85.6mm;height:54mm;border-radius:3.2mm;overflow:hidden;position:relative;border:.3mm solid #c9d2cc;background:#fff;display:grid;grid-template-rows:13.5mm 1fr 1.6mm;-webkit-print-color-adjust:exact;print-color-adjust:exact;break-inside:avoid}
+.idc .top{background:#1F5136;color:#fff;display:flex;align-items:center;gap:2.5mm;padding:0 3mm}
+.idc .top img{width:9.5mm;height:9.5mm;background:#fff;border-radius:2mm;padding:.6mm;object-fit:contain}
+.idc .top b{display:block;font-size:7.6pt;line-height:1.25}.idc .top span{display:block;font-size:4.9pt;color:#E3C77C;letter-spacing:.2px;line-height:1.3}
+.idc .body{display:flex;gap:2.6mm;padding:2.6mm 3mm;align-items:center;position:relative;overflow:hidden}
+.idc .ph{flex:none;width:17mm;height:20.5mm;border-radius:1.6mm;overflow:hidden;border:.3mm solid #E3C77C;position:relative;z-index:1}.idc .ph svg{width:100%;height:100%;display:block}
+.idc .wm{position:absolute;left:50%;top:50%;width:30mm;transform:translate(-50%,-50%);opacity:.06;z-index:0}
+.idc .inf,.idc .qr{position:relative;z-index:1}
+.idc .qr svg{width:18mm;height:18mm;display:block}
+.idc .inf{flex:1;display:grid;gap:.6mm;min-width:0}
+.idc .tag{font-size:6.4pt;color:#8a6d22;font-weight:700}
+.idc .nm{font-size:10pt;font-weight:700;color:#1F5136;line-height:1.3}
+.idc .no{font-size:6.6pt;color:#555}.idc .no b{font-family:ui-monospace,Menlo,monospace;font-size:10.5pt;color:#1d2621;letter-spacing:.6px}
+.idc .yr{font-size:6pt;color:#777}
+.idc .strip{background:linear-gradient(90deg,#C9A54C,#E3C77C,#C9A54C)}
+.sig div{position:relative}.sig .sgi{position:absolute;bottom:calc(100% + 2px);left:50%;transform:translateX(-50%);max-height:20mm;max-width:58mm}
+.sig .stp{position:absolute;bottom:calc(100% - 8mm);left:50%;transform:translateX(-10%) rotate(-8deg);width:28mm;opacity:.9}
+img{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.page.certp{padding:7mm}
+.c2{position:relative;height:184mm;background:#FCFAF3;border:2.2mm solid #1F5136;outline:.5mm solid #C9A54C;outline-offset:-4.2mm;padding:9mm 18mm 7mm;text-align:center;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;flex-direction:column;align-items:center}
+.c2::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 50% 0%,rgba(201,165,76,.16),transparent 55%),radial-gradient(circle at 50% 100%,rgba(31,81,54,.08),transparent 50%);pointer-events:none}
+.c2 .cn{position:absolute;width:20mm;height:20mm}.c2 .cn svg{width:100%;height:100%}
+.c2 .tl{top:5.5mm;left:5.5mm;transform:scaleX(1)}.c2 .tr{top:5.5mm;right:5.5mm;transform:scaleX(-1)}.c2 .bl{bottom:5.5mm;left:5.5mm;transform:scaleY(-1)}.c2 .br{bottom:5.5mm;right:5.5mm;transform:scale(-1,-1)}
+.c2wm{position:absolute;width:105mm;left:50%;top:52%;transform:translate(-50%,-50%);opacity:.05}
+.c2 > :not(.cn):not(.c2wm){position:relative}
+.c2hd{display:flex;align-items:center;gap:4mm;justify-content:center}.c2hd img{height:17mm}.c2hd b{display:block;font-family:"Reem Kufi","IBM Plex Sans Arabic",sans-serif;font-size:15pt;color:#1F5136;line-height:1.3;text-align:right}.c2hd span{display:block;font-size:7.5pt;color:#9A7A2E;letter-spacing:.6px;text-align:right}
+.c2title{display:flex;align-items:center;gap:5mm;margin-top:5mm}.c2title i{display:block;width:32mm;height:.5mm;background:linear-gradient(90deg,transparent,#C9A54C)}.c2title i:last-child{background:linear-gradient(90deg,#C9A54C,transparent)}
+.c2title h1{font-family:"Reem Kufi","IBM Plex Sans Arabic",sans-serif;font-size:31pt;color:#B48E3A;margin:0;line-height:1.15}
+.c2en{font-size:8.5pt;letter-spacing:5px;color:#1F5136;margin-top:1mm}
+.c2lead{font-size:12.5pt;margin:5mm 0 1mm;color:#333}
+.c2name{font-family:"Reem Kufi","IBM Plex Sans Arabic",sans-serif;font-size:27pt;color:#1F5136;line-height:1.3;padding:0 10mm 1.5mm;border-bottom:.6mm solid #C9A54C}
+.c2num{font-size:9.5pt;color:#777;margin-top:1.2mm}
+.c2body{font-size:12.5pt;margin:3.5mm 0 0;color:#333}
+.c2course{font-size:16pt;font-weight:700;color:#1F5136;margin-top:1mm}
+.c2facts{display:flex;gap:3mm;justify-content:center;flex-wrap:wrap;margin-top:3.5mm}
+.c2facts span{border:.35mm solid #E3D3A6;background:#fff;border-radius:3mm;padding:1.4mm 4mm;font-size:10pt;color:#1d2621;display:grid}.c2facts small{font-size:7pt;color:#9A7A2E}
+.c2date{font-size:10.5pt;color:#555;margin:3.5mm 0 0}
+.c2sig{margin-top:auto;width:100%;display:grid;grid-template-columns:1fr 34mm 1fr;align-items:end;gap:10mm}
+.c2sig .s{position:relative;border-top:.35mm solid #9A7A2E;padding-top:1.5mm;font-size:10pt;color:#333;min-height:9mm}
+.c2sig .s .sgi{position:absolute;bottom:calc(100% + 1mm);left:50%;transform:translateX(-50%);max-height:17mm;max-width:52mm}
+.c2sig .s .stp{position:absolute;bottom:calc(100% - 3mm);left:14%;transform:rotate(-10deg);width:28mm;opacity:.88}
+.c2sig .q{display:grid;justify-items:center;gap:1mm}.c2sig .q svg{width:22mm;height:22mm;display:block;background:#fff;padding:1mm}.c2sig .q small{font-size:7pt;color:#666;direction:ltr}
+.c2lic{font-size:8pt;color:#8a8a8a;margin-top:3mm}
 @media print{body{background:#fff}.bar{display:none}.page{margin:0;width:auto;min-height:auto}}
 `;
 const fillPrintFin = (w, title, pages, land) => fillPrint(w, title, pages, land, "المالية");
@@ -1139,10 +1191,10 @@ function fillPrint(w, title, pages, land, dept){
   const head = `<header class="hd"><img src="${SITE()}logo-mark.png" alt=""><div class="t"><b>${INST_AR}</b><span>${INST_EN}</span></div><div class="meta">${esc(dept || "الشؤون الأكاديمية")}<br>${esc(bothDates(today()))}${S.site && S.site.accNo ? `<br>رقم الرخصة: ${esc(S.site.accNo)}` : ""}</div>${S._licQR && S.site && S.site.licUrl === S._licQRurl ? `<div class="licq">${S._licQR}</div>` : ""}</header>`;
   w.document.open();
   w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${esc(title)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&family=Reem+Kufi:wght@600;700&display=swap" rel="stylesheet">
   <style>${PRINT_CSS}${land ? "@page{size:A4 landscape}" : ""}</style></head><body>
   <div class="bar"><span>${esc(title)}</span><button onclick="print()">طباعة / حفظ PDF</button></div>
-  ${pages.map(pg => `<section class="page${land ? " land" : ""}">${pg.noHead ? "" : head}${pg.html}<div class="ft"><span>${INST_AR}</span><span>${esc(title)}</span></div></section>`).join("")}
+  ${pages.map(pg => `<section class="page${land ? " land" : ""}${pg.cls ? " " + pg.cls : ""}">${pg.noHead ? "" : head}${pg.html}${pg.noFoot ? "" : `<div class="ft"><span>${INST_AR}</span><span>${esc(title)}</span></div>`}</section>`).join("")}
   <script>(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>setTimeout(()=>print(),400))<\/script></body></html>`);
   w.document.close();
 }
@@ -1160,7 +1212,7 @@ function printGroupSheet(g, docs){
     <table><thead><tr><th>م</th><th>الاسم</th><th>الرقم</th>${sessions.map(d => `<th>${esc(d.date.slice(5))}</th>`).join("")}<th>حضور</th><th>غياب</th><th>النسبة</th><th>الحالة</th></tr></thead><tbody>
     ${rows.map(r => `<tr><td>${r.i + 1}</td><td class="n">${esc(r.s.name)}</td><td>${esc(r.s.sid || "")}</td>${r.cells.map(k => `<td class="k-${k}">${KS[k]}</td>`).join("")}<td>${r.st.attPct === null ? "—" : r.st.attPct + "%"}</td><td>${r.st.a}</td><td>${r.st.absPct}%</td><td>${LEVEL[r.st.level]}</td></tr>`).join("")}
     </tbody></table><p style="font-size:10.5px;color:#666">ح حاضر · ت متأخر · غ غائب · م مستأذن/عذر مقبول</p>
-    <div class="sig"><div>المدرب/ة</div><div>الشؤون الأكاديمية</div></div>`;
+    <div class="sig"><div>المدرب/ة</div>${sigSlot("الشؤون الأكاديمية", "academic")}</div>`;
   fillPrint(w, `كشف حضور ${g.course}`, [{html}], sessions.length > 8);
   logAction("طباعة كشف حضور", g.course);
 }
@@ -1196,7 +1248,7 @@ async function printStudentReport(num){
     ${data.map(({g, st}) => `<tr><td class="n">${esc(g.course)}</td><td class="n">${esc(tName(g.trainerId))}</td><td>${st.held}${st.total ? "/" + st.total : ""}</td><td>${st.p}</td><td>${st.l}</td><td>${st.a}</td><td>${st.e}</td><td>${st.absPct}%</td><td>${LEVEL[st.level]}</td></tr>`).join("")}
     </tbody></table>
     ${data.map(({g, e, ds}) => ds.length ? `<h3 style="color:#1F5136;margin:16px 0 6px">${esc(g.course)}</h3><table><thead><tr>${ds.map(d => `<th>${esc(d.date.slice(5))}</th>`).join("")}</tr></thead><tbody><tr>${ds.map(d => { const k = (e && d.rec && d.rec[e.id] && d.rec[e.id].st) || "a"; return `<td class="k-${k}">${KS[k]}</td>`; }).join("")}</tr></tbody></table>` : "").join("")}
-    <div class="sig"><div>الشؤون الأكاديمية</div><div>الختم</div></div>`;
+    <div class="sig">${sigSlot("الشؤون الأكاديمية", "academic")}${sigSlot("الختم", "", true)}</div>`;
   fillPrint(w, `كشف حضور ${s.name}`, [{html}]);
   logAction("طباعة كشف متدرب", `${s.name} · ${num}`);
 }
@@ -1214,7 +1266,7 @@ function warningLetter(w){
     <p>نفيدكم بأن غيابكم في المقرر المذكور بلغ <b>(${w.absences ?? "—"})</b> محاضرة، بنسبة <b>${w.absPct}%</b>${(S.groups[w.groupId] || {}).totalSessions ? ` من إجمالي محاضرات المقرر (${S.groups[w.groupId].totalSessions})` : ""}.</p>
     <p>وبناءً على لائحة الحضور والغياب المعتمدة في المعهد، فقد صدر بحقكم <b>${esc(w.levelName)}</b>${deny ? "، وتُطبَّق بحقكم إجراءات الحرمان وفق اللائحة." : `، علماً بأن الحرمان يقع عند بلوغ نسبة الغياب ${TH().deny}%. نأمل منكم الالتزام بالحضور.`}</p>
     <p>والله ولي التوفيق.</p>
-    <div class="sig"><div>الشؤون الأكاديمية<br><small>الاسم والتوقيع والختم</small></div><div>المتدرب/ة<br><small>اطلعت · التوقيع · التاريخ</small></div></div></div>`;
+    <div class="sig">${sigSlot("الشؤون الأكاديمية<br><small>الاسم والتوقيع والختم</small>", "academic", true)}<div>المتدرب/ة<br><small>اطلعت · التوقيع · التاريخ</small></div></div></div>`;
 }
 function printWarnings(list){
   const w = openPrint(); if (!w) return;
@@ -1224,18 +1276,36 @@ function printWarnings(list){
 let _qr = null;
 const loadQR = () => _qr || (_qr = new Promise((ok, no) => { if (window.qrcode) return ok(window.qrcode); const sc = document.createElement("script"); sc.src = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"; sc.onload = () => ok(window.qrcode); sc.onerror = no; document.head.appendChild(sc); }));
 const verifyUrl = code => `${SITE()}?verify=${code}`;
+const CORNER = `<svg viewBox="0 0 60 60" aria-hidden="true"><path d="M2 58V14Q2 2 14 2h44" fill="none" stroke="#C9A54C" stroke-width="1.6"/><path d="M8 58V18Q8 8 18 8h40" fill="none" stroke="#C9A54C" stroke-width=".7"/><path d="M14 14l6-6 6 6-6 6z" fill="#C9A54C"/><circle cx="20" cy="14" r="1.6" fill="#1F5136"/></svg>`;
 async function certPage(c){
   let svg = "";
   try { const qrcode = await loadQR(); const q = qrcode(0, "M"); q.addData(verifyUrl(c.code)); q.make(); svg = q.createSvgTag({cellSize: 3, margin: 0}); } catch {}
-  return {noHead: true, html: `<div class="cert">
-    <img class="logo" src="${SITE()}logo.jpg" alt="">
-    <h1>شهادة حضور</h1><div class="en">CERTIFICATE OF ATTENDANCE</div>
-    <p style="margin-top:14px">يشهد ${INST_AR} بأن ${c.gender === "f" ? "المتدربة" : "المتدرب"}</p>
-    <div class="who">${esc(c.name)}</div>
-    <p>صاحب${c.gender === "f" ? "ة" : ""} الرقم الأكاديمي <b>${esc(c.num)}</b>، قد ${c.gender === "f" ? "حضرت" : "حضر"} مقرر <b>${esc(c.course)}</b><br>
-    مع ${esc(c.trainer)}، بنسبة حضور <b>${c.attPct}%</b>، وأُصدرت ${c.gender === "f" ? "لها" : "له"} هذه الشهادة بتاريخ ${esc(bothDates(c.date))}.</p>
-    <div class="sig" style="margin-top:34px"><div>الشؤون الأكاديمية</div><div>مدير المعهد</div></div>
-    <div class="qr">${svg}<div>للتحقق: ${esc(c.code)}</div></div>
+  const f = c.gender === "f", course = c.kind === "course";
+  const facts = course
+    ? [c.hours ? ["المدة", `${esc(c.hours)} ساعة تدريبية`] : null, c.from ? ["الفترة", `${esc(greg(c.from))}${c.to && c.to !== c.from ? " – " + esc(greg(c.to)) : ""}`] : null, c.trainer ? ["المدرب/ة", esc(c.trainer)] : null].filter(Boolean)
+    : [["المدرب/ة", esc(c.trainer || "")], ["نسبة الحضور", `${c.attPct}%`]];
+  const body = course
+    ? `قد ${f ? "حضرت" : "حضر"} الدورة التدريبية`
+    : `قد ${f ? "حضرت" : "حضر"} المقرر التدريبي`;
+  return {noHead: true, noFoot: true, cls: "certp", html: `<div class="c2">
+    <span class="cn tl">${CORNER}</span><span class="cn tr">${CORNER}</span><span class="cn bl">${CORNER}</span><span class="cn br">${CORNER}</span>
+    <img class="c2wm" src="${SITE()}logo-mark-t.png" alt="">
+    <header class="c2hd"><img src="${SITE()}logo-mark-t.png" alt=""><div><b>${INST_AR}</b><span>${INST_EN}</span></div></header>
+    <div class="c2title"><i></i><h1>شهادة حضور</h1><i></i></div>
+    <div class="c2en">CERTIFICATE OF ATTENDANCE</div>
+    <p class="c2lead">يشهد ${INST_AR} بأن ${f ? "المتدربة" : "المتدرب"}</p>
+    <div class="c2name">${esc(c.name)}</div>
+    ${c.num ? `<div class="c2num">الرقم التدريبي ${esc(c.num)}</div>` : ""}
+    <p class="c2body">${body}</p>
+    <div class="c2course">«${esc(c.course)}»</div>
+    <div class="c2facts">${facts.map(([k, v]) => `<span><small>${k}</small>${v}</span>`).join("")}</div>
+    <p class="c2date">وأُصدرت ${f ? "لها" : "له"} هذه الشهادة بتاريخ ${esc(bothDates(c.date))}</p>
+    <div class="c2sig">
+      <div class="s">${sgImg("academic")}<span>مسؤول الشؤون الأكاديمية</span></div>
+      <div class="q">${svg}<small>للتحقق: ${esc(c.code)}</small></div>
+      <div class="s">${sgImg("director")}${stpImg()}<span>مدير المعهد</span></div>
+    </div>
+    ${S.site && S.site.accNo ? `<div class="c2lic">مرخّص من المؤسسة العامة للتدريب التقني والمهني · رقم الرخصة ${esc(S.site.accNo)}</div>` : ""}
   </div>`};
 }
 async function printCerts(list){
@@ -1245,7 +1315,8 @@ async function printCerts(list){
 }
 const certCode = () => { const a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let s = ""; const r = crypto.getRandomValues(new Uint8Array(10)); r.forEach(x => s += a[x % a.length]); return s; };
 function renderVerify(app){
-  if (S._vHTML) { app.innerHTML = S._vHTML; return; }
+  const bindV = () => { const b = $("#vPrint"); if (b) b.onclick = () => printCerts([S._vCert]); };
+  if (S._vHTML) { app.innerHTML = S._vHTML; bindV(); return; }
   if (S._vBusy) return; S._vBusy = true;
   app.innerHTML = `<div class="card" style="max-width:560px;width:100%;justify-self:center;text-align:center"><p class="muted">جاري التحقق…</p></div>`;
   const done = () => { S._vHTML = app.innerHTML; };
@@ -1256,13 +1327,15 @@ function renderVerify(app){
       <img src="logo-mark.png" alt="" style="width:90px"><h2 style="color:var(--ok)">✓ شهادة حضور صحيحة</h2>
       <div class="list" style="text-align:right">
         <div class="item"><span class="grow">الاسم</span><b>${esc(c.name)}</b></div>
-        <div class="item"><span class="grow">الرقم الأكاديمي</span><b>${esc(c.num)}</b></div>
-        <div class="item"><span class="grow">المقرر</span><b>${esc(c.course)}</b></div>
-        <div class="item"><span class="grow">نسبة الحضور</span><b>${c.attPct}%</b></div>
+        ${c.num ? `<div class="item"><span class="grow">الرقم التدريبي</span><b>${esc(c.num)}</b></div>` : ""}
+        <div class="item"><span class="grow">${c.kind === "course" ? "الدورة" : "المقرر"}</span><b>${esc(c.course)}</b></div>
+        ${c.kind === "course" ? `${c.hours ? `<div class="item"><span class="grow">عدد الساعات</span><b>${esc(c.hours)}</b></div>` : ""}${c.from ? `<div class="item"><span class="grow">الفترة</span><b>${esc(c.from)}${c.to && c.to !== c.from ? " ← " + esc(c.to) : ""}</b></div>` : ""}` : `<div class="item"><span class="grow">نسبة الحضور</span><b>${c.attPct}%</b></div>`}
         <div class="item"><span class="grow">تاريخ الإصدار</span><b>${esc(bothDates(c.date))}</b></div>
         <div class="item"><span class="grow">رمز التحقق</span><b dir="ltr">${esc(c.code)}</b></div>
-      </div><p class="muted">صادرة من ${INST_AR}</p></div>`;
-    done();
+      </div><p class="muted">صادرة من ${INST_AR}</p>
+      <button class="btn gold" id="vPrint">عرض الشهادة وطباعتها</button></div>`;
+    S._vCert = c;
+    done(); bindV();
   }).catch(() => { app.innerHTML = `<div class="notice err">تعذّر التحقق، حاول مرة ثانية.</div>`; });
 }
 
@@ -1337,12 +1410,12 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
-  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية"]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية"]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
-  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, evals: adminEvals, report: adminReport, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
+  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
 }
 
 function adminDash(el){
@@ -1417,7 +1490,7 @@ function adminGroups(el){
 }
 
 function trainerOptions(sel){ return `<option value="">بدون مدرب</option>` + Object.values(S.trainers).sort((a,b)=>a.name.localeCompare(b.name,"ar")).map(t => `<option value="${esc(t.id)}" ${t.id===sel?"selected":""}>${esc(trainerTitle(t))}</option>`).join(""); }
-function closeModal(){ $("#modal").classList.remove("on"); S._modalGroup = null; render(); }
+function closeModal(){ S._crsOpen = null; $("#modal").classList.remove("on"); S._modalGroup = null; render(); }
 function openGroup(id){
   const g = id ? S.groups[id] : null;
   S._modalGroup = id || ("g-" + uid());
@@ -1534,8 +1607,15 @@ function adminStudents(el){
     <div class="row" style="margin-top:10px"><input type="text" id="sq" class="grow" placeholder="ابحث بالاسم أو الرقم"><button class="btn sm" id="copyAll">نسخ كل الأرقام والرموز</button></div>
   </div>
   <div class="list" id="slist"></div>
+  <div class="card"><h2>بطاقات المتدربين</h2>
+    <p class="muted" style="margin-top:0">بطاقة بمقاس البطاقة البنكية، فيها الشعار والاسم والرقم التدريبي وQR. 8 بطاقات في كل صفحة A4، تطبعها وتقصها أو تطبعها على طابعة بطاقات.</p>
+    <div class="row"><select id="idSel" class="grow"><option value="all">كل المتدربين (${list.length})</option>${sortedGroups().map(g => `<option value="g:${esc(g.id)}">${esc(g.course)} · ${esc(tName(g.trainerId))} (${(g.memberNums || []).length})</option>`).join("")}</select><button class="btn gold sm" id="idPrint">طباعة البطاقات</button></div>
+    <p class="muted">لبطاقة متدرب واحد: زر «الملف» قدام اسمه ثم «طباعة بطاقته».</p></div>
+  <div class="card"><h2>بيانات المتدربين</h2>
+    <p class="muted" style="margin-top:0">رقم الهوية وتاريخ الميلاد والجنسية وجوال ولي الأمر وغيرها. تعبّيها من زر «الملف» قدام كل متدرب، أو من ملف Excel تحت.</p>
+    <button class="btn sm" id="pfX">تنزيل بيانات كل المتدربين Excel</button></div>
   <div class="card"><h2>استيراد متدربين من Excel</h2>
-    <p class="muted" style="margin-top:0">الملف فيه أعمدة: <b>الاسم</b> و<b>الجنس</b> (طالب/طالبة)، واختياري <b>الجوال</b>. كل متدرب ينعمل له رقم ورمز. الأسماء الموجودة من قبل تنربط بدون تكرار.</p>
+    <p class="muted" style="margin-top:0">الملف فيه أعمدة: <b>الاسم</b> و<b>الجنس</b> (طالب/طالبة)، واختياري <b>الجوال</b> و<b>رقم الهوية</b> و<b>تاريخ الميلاد</b> و<b>الجنسية</b> و<b>جوال ولي الأمر</b>. كل متدرب ينعمل له رقم ورمز. الأسماء الموجودة من قبل تنربط بدون تكرار.</p>
     <div class="row"><input type="file" id="xF" accept=".xlsx,.xls,.csv" class="grow"><button class="btn sm" id="xTpl">تنزيل نموذج</button></div>
     <div class="row" style="margin-top:8px"><select id="xG" class="grow"><option value="">بدون شعبة (أضيفهم بعدين)</option>${sortedGroups().map(g => `<option value="${esc(g.id)}">إضافتهم لشعبة: ${esc(g.course)} · ${esc(tName(g.trainerId))}</option>`).join("")}</select><button class="btn pri" id="xRun">استيراد</button></div>
     <div id="xLog" class="muted" style="margin-top:8px;white-space:pre-line"></div>
@@ -1556,9 +1636,10 @@ function adminStudents(el){
         <span class="pill ${(S.stPhones || {})[s.num] ? "p" : ""}" dir="ltr">${esc((S.stPhones || {})[s.num] || "بدون جوال")}</span>
         <button class="btn sm gold" data-wa="${esc(s.num)}">واتساب</button>
         <button class="btn sm" data-srep="${esc(s.num)}">كشف PDF</button><button class="btn sm" data-sxls="${esc(s.num)}">Excel</button>
-        <button class="btn sm" data-scopy="${esc(s.num)}">نسخ</button><button class="btn sm" data-snew="${esc(s.num)}">رمز جديد</button><button class="btn sm" data-sdis="${esc(s.num)}">${(S.disabled || {})[s.num] ? "تفعيل" : "تعطيل"}</button><button class="btn sm danger" data-sdel="${esc(s.num)}">حذف</button></div>`;
+        <button class="btn sm" data-sprof="${esc(s.num)}">الملف</button><button class="btn sm" data-scopy="${esc(s.num)}">نسخ</button><button class="btn sm" data-snew="${esc(s.num)}">رمز جديد</button><button class="btn sm" data-sdis="${esc(s.num)}">${(S.disabled || {})[s.num] ? "تفعيل" : "تعطيل"}</button><button class="btn sm danger" data-sdel="${esc(s.num)}">حذف</button></div>`;
     }).join("") || `<div class="card empty">${list.length ? "ما فيه نتائج" : "ما فيه طلاب بعد. استورد الملف من تحت."}</div>`;
     el.querySelectorAll("[data-wa]").forEach(b => b.onclick = () => openWhatsApp(b.dataset.wa));
+    el.querySelectorAll("[data-sprof]").forEach(b => b.onclick = () => openProfile(b.dataset.sprof));
     el.querySelectorAll("[data-srep]").forEach(b => b.onclick = () => printStudentReport(b.dataset.srep).catch(() => toast("تعذّر تجهيز الكشف")));
     el.querySelectorAll("[data-sxls]").forEach(b => b.onclick = () => excelStudentReport(b.dataset.sxls).catch(() => toast("تعذّر تجهيز الملف")));
     el.querySelectorAll("[data-sdis]").forEach(b => b.onclick = () => setDisabled("students", b.dataset.sdis, !(S.disabled || {})[b.dataset.sdis], (S.students[b.dataset.sdis] || {}).name));
@@ -1610,10 +1691,22 @@ function adminStudents(el){
     $("#nsb").disabled = false;
   };
   $("#upB").onclick = () => runStudentImport();
-  $("#xTpl").onclick = () => excelDownload("نموذج استيراد المتدربين", [{title: "المتدربين", rows: [["الاسم", "الجنس", "الجوال"], ["محمد عبدالله الفايز", "طالب", "0551234567"], ["لجين عادل", "طالبة", ""]], widths: [32, 10, 14]}]);
+  $("#xTpl").onclick = () => excelDownload("نموذج استيراد المتدربين", [{title: "المتدربين", rows: [["الاسم", "الجنس", "الجوال", "رقم الهوية", "تاريخ الميلاد", "الجنسية", "جوال ولي الأمر"], ["محمد عبدالله الفايز", "طالب", "0551234567"], ["لجين عادل", "طالبة", ""]], widths: [32, 10, 14]}]);
   $("#xRun").onclick = () => runExcelImport();
+  $("#idPrint").onclick = () => { const v = $("#idSel").value; printIdCards(v === "all" ? list.map(s => s.num) : ((S.groups[v.slice(2)] || {}).memberNums || []).slice().sort()); };
+  $("#pfX").onclick = exportProfiles;
 }
 
+/* Excel dates arrive as serial numbers, Date objects or text; keep YYYY-MM-DD (Gregorian) only */
+function xlDate(v){
+  if (v === "" || v == null) return "";
+  if (typeof v === "number" && v > 20000 && v < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + v * 864e5); return d.toISOString().slice(0, 10); }
+  const t = digits(String(v)).trim(), m = t.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/) || t.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (!m) return "";
+  const [y, mo, d] = m[1].length === 4 ? [m[1], m[2], m[3]] : [m[3], m[2], m[1]];
+  if (Number(y) < 1900) return "";   // a Hijri date: skip rather than guess
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
 async function runExcelImport(){
   const f = $("#xF").files[0]; if (!f) return toast("اختر ملف Excel");
   const lines = []; const log = m => { lines.push(m); const el = $("#xLog"); if (el) el.textContent = lines.slice(-8).join("\n"); };
@@ -1622,9 +1715,12 @@ async function runExcelImport(){
   catch (e) { console.error(e); return toast("تعذّر قراءة الملف"); }
   const head = (rows[0] || []).map(h => norm(h));
   const col = names => head.findIndex(h => names.some(n => h.includes(norm(n))));
-  const cN = col(["الاسم", "اسم"]), cG = col(["الجنس", "النوع", "الفئه", "الفئة"]), cP = col(["الجوال", "جوال", "الهاتف", "رقم"]);
+  const cGp = col(["ولي الامر", "ولي الأمر", "جوال الولي"]);
+  const cN = col(["الاسم", "اسم"]), cG = col(["الجنس", "النوع", "الفئه", "الفئة"]);
+  const cP = head.findIndex((h, i) => i !== cGp && ["الجوال", "جوال", "الهاتف"].some(n => h.includes(norm(n))));
+  const cId = col(["الهويه", "الهوية", "الاقامه", "الإقامة", "السجل المدني"]), cDob = col(["الميلاد"]), cNat = col(["الجنسيه", "الجنسية"]);
   if (cN < 0) return toast("ما لقيت عمود الاسم في أول صف");
-  const data = rows.slice(1).map(r => ({name: String(r[cN] || "").trim().replace(/\s+/g, " "), g: cG >= 0 ? String(r[cG] || "") : "", phone: cP >= 0 ? String(r[cP] || "") : ""})).filter(r => r.name);
+  const data = rows.slice(1).map(r => ({name: String(r[cN] || "").trim().replace(/\s+/g, " "), g: cG >= 0 ? String(r[cG] || "") : "", phone: cP >= 0 ? String(r[cP] || "") : "", nid: cId >= 0 ? digits(r[cId]) : "", dob: cDob >= 0 ? xlDate(r[cDob]) : "", nat: cNat >= 0 ? String(r[cNat] || "").trim() : "", gphone: cGp >= 0 ? String(r[cGp] || "") : ""})).filter(r => r.name);
   if (!data.length) return toast("الملف فاضي");
   const gid = $("#xG").value; S._busy = true; $("#xRun").disabled = true;
   let made = 0, linked = 0, phones = 0; const nums = [];
@@ -1635,7 +1731,13 @@ async function runExcelImport(){
       if (!st) { log(`(${i + 1}/${data.length}) إنشاء ${r.name}`); st = await createStudent(r.name, gender); made++; } else linked++;
       nums.push(st);
       const ph = normPhone(r.phone);
-      if (/^9665\d{8}$/.test(ph) && (S.stPhones || {})[st.num] !== ph) { await setDoc(ref("studentSecrets/" + st.num), {phone: ph}, {merge: true}); phones++; }
+      const prof = {};
+      if (/^9665\d{8}$/.test(ph) && (S.stPhones || {})[st.num] !== ph) { prof.phone = ph; phones++; }
+      if (/^[12]\d{9}$/.test(r.nid)) prof.nid = r.nid;
+      if (r.dob) prof.dob = r.dob;
+      if (r.nat) prof.nat = /غير|non/i.test(r.nat) ? "غير سعودي" : /سعود|saudi/i.test(r.nat) ? "سعودي" : r.nat.slice(0, 30);
+      const gp = normPhone(r.gphone); if (/^9665\d{8}$/.test(gp)) prof.gphone = gp;
+      if (Object.keys(prof).length) await setDoc(ref("studentSecrets/" + st.num), prof, {merge: true});
     }
   } catch (e) { console.error(e); log(accountErr(e) + " · شغّل الاستيراد مرة ثانية ويكمل من مكانه."); }
   if (gid && S.groups[gid] && nums.length) {
@@ -2021,6 +2123,8 @@ function adminSystem(el){
     <div class="list" id="fqL">${((S.site || {}).faq || DEFAULT_FAQ).map((f, i) => `<div class="item" style="padding:8px 12px;align-items:flex-start"><div class="grow" style="display:grid;gap:6px"><input type="text" data-fq="${i}" value="${esc(f.q)}" placeholder="السؤال"><textarea data-fa="${i}" style="min-height:50px" placeholder="الجواب">${esc(f.a)}</textarea></div><button class="btn sm danger" data-fdel="${i}">حذف</button></div>`).join("")}</div>
     <div class="row" style="margin-top:8px"><button class="btn sm" id="fqAdd">+ سؤال</button><button class="btn pri sm" id="fqSave">حفظ الأسئلة</button></div>
   </div>
+  ${S.adminRole === "admin" ? sigCard("director", "توقيع مدير المعهد", "يظهر على الشهادات في خانة مدير المعهد.") + sigCard("stamp", "الختم الإلكتروني", "يظهر على الشهادات في خانة مدير المعهد، وعلى السندات والكشوف في خانة الختم.") : ""}
+  ${S.adminRole === "academic" || S.adminRole === "admin" ? sigCard("academic", "توقيع مسؤول الشؤون الأكاديمية", "يظهر على الشهادات وكشوف الحضور والإنذارات في خانة الشؤون الأكاديمية.") : ""}
   <div class="card"><h2>الشهادات والمالية</h2>
     <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
     ${sys.certNeedsFee ? `<button class="btn sm" id="cfOff">إيقاف شرط السداد</button> <span class="pill p">شغّال</span>` : `<button class="btn pri sm" id="cfOn">اشتراط السداد لإصدار الشهادة</button>`}
@@ -2087,6 +2191,7 @@ function adminSystem(el){
   $("#mSaveMsg").onclick = () => saveSys({maintenanceMsg: $("#mMsg").value.trim()}, "تعديل رسالة الصيانة");
   if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
   if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
+  bindSigCards(el);
   $("#siteSave").onclick = async () => {
     const d = {};
     SOCIAL.filter(([k]) => k !== "whatsapp").forEach(([k]) => d[k] = $("#so-" + k).value.trim().slice(0, 120));
@@ -2351,6 +2456,371 @@ function adminKpi(el){
   $("#kRef").onclick = () => { S.kpiAtt = null; render(); };
 }
 
+
+/* ---------- full trainee profile (kept with the login secrets: administration only) ---------- */
+const NATS = ["سعودي", "غير سعودي"];
+function openProfile(num){
+  const st = S.students[num]; if (!st) return;
+  const p = (S.stProf || {})[num] || {};
+  S._modalGroup = null; S._finModal = null;
+  $("#modalBox").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">ملف المتدرب · ${esc(st.name)}</h2><button class="btn sm" id="pfx">إغلاق</button></div>
+    <p class="muted" style="margin:0">الرقم الأكاديمي ${esc(num)} · البيانات هذي تشوفها الإدارة والشؤون الأكاديمية بس.</p>
+    <div class="row">
+      <label class="f grow" for="pfNid">رقم الهوية / الإقامة<input type="text" id="pfNid" inputmode="numeric" dir="ltr" maxlength="10" value="${esc(p.nid || "")}"></label>
+      <label class="f grow" for="pfDob">تاريخ الميلاد<input type="date" id="pfDob" value="${esc(p.dob || "")}"></label>
+      <label class="f grow" for="pfNat">الجنسية<select id="pfNat"><option value="">—</option>${NATS.map(n => `<option ${p.nat === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+    </div>
+    <div class="row">
+      <label class="f grow" for="pfPh">جوال المتدرب<input type="tel" id="pfPh" dir="ltr" value="${esc(p.phone || "")}" placeholder="05xxxxxxxx"></label>
+      <label class="f grow" for="pfG">جوال ولي الأمر<input type="tel" id="pfG" dir="ltr" value="${esc(p.gphone || "")}" placeholder="05xxxxxxxx"></label>
+      <label class="f grow" for="pfE">البريد الإلكتروني<input type="email" id="pfE" dir="ltr" value="${esc(p.email || "")}"></label>
+    </div>
+    <div class="row">
+      <label class="f grow" for="pfEdu">المؤهل<input type="text" id="pfEdu" value="${esc(p.edu || "")}" placeholder="ثانوي، دبلوم، بكالوريوس…"></label>
+      <label class="f grow" for="pfCity">المدينة / الحي<input type="text" id="pfCity" value="${esc(p.city || "")}"></label>
+    </div>
+    <label class="f" for="pfN">ملاحظات<textarea id="pfN" style="min-height:60px">${esc(p.note || "")}</textarea></label>
+    <div class="row"><button class="btn pri" id="pfSave">حفظ</button><button class="btn sm" id="pfCard">طباعة بطاقته</button></div>`;
+  $("#modal").classList.add("on");
+  $("#pfx").onclick = closeModal;
+  $("#pfCard").onclick = () => printIdCards([num]);
+  $("#pfSave").onclick = async () => {
+    const nid = digits($("#pfNid").value), ph = $("#pfPh").value.trim() ? normPhone($("#pfPh").value) : "", gp = $("#pfG").value.trim() ? normPhone($("#pfG").value) : "";
+    if (nid && !/^[12]\d{9}$/.test(nid)) return toast("رقم الهوية لازم يكون 10 أرقام ويبدأ بـ 1 أو 2");
+    if (ph && !/^9665\d{8}$/.test(ph)) return toast("جوال المتدرب غير صحيح");
+    if (gp && !/^9665\d{8}$/.test(gp)) return toast("جوال ولي الأمر غير صحيح");
+    const d = {nid, dob: $("#pfDob").value, nat: $("#pfNat").value, phone: ph, gphone: gp, email: $("#pfE").value.trim().slice(0, 120), edu: $("#pfEdu").value.trim().slice(0, 60), city: $("#pfCity").value.trim().slice(0, 80), note: $("#pfN").value.trim().slice(0, 600)};
+    try { await setDoc(ref("studentSecrets/" + num), d, {merge: true}); S.stProf[num] = {...p, ...d}; if (ph) S.stPhones[num] = ph; logAction("ملف متدرب", `${st.name} · ${num}`); toast("انحفظ الملف"); closeModal(); }
+    catch (e) { handleWriteErr(e); }
+  };
+}
+function exportProfiles(){
+  const rows = Object.values(S.students).sort((a, b) => a.num.localeCompare(b.num)).map(st => { const p = (S.stProf || {})[st.num] || {}; const gs = Object.values(S.groups).filter(g => (g.memberNums || []).includes(st.num)).map(g => g.course).join("، ");
+    return [st.num, st.name, GENDER[st.gender] || "", p.nid || "", p.dob || "", p.nat || "", p.phone || "", p.gphone || "", p.email || "", p.edu || "", p.city || "", gs]; });
+  excelDownload("بيانات المتدربين", [{title: "المتدربين", rows: [[INST_AR], ["بيانات المتدربين"], [], ["الرقم الأكاديمي", "الاسم", "الجنس", "رقم الهوية", "تاريخ الميلاد", "الجنسية", "الجوال", "جوال ولي الأمر", "البريد", "المؤهل", "المدينة", "المقررات"], ...rows], widths: [13, 28, 8, 13, 12, 11, 14, 14, 24, 12, 14, 40]}]);
+  logAction("تنزيل بيانات المتدربين", `${rows.length}`);
+}
+
+/* ---------- trainee ID cards: CR80 size, 8 per A4 page ---------- */
+/* a neutral figure in the photo slot (no personal photos are stored) */
+const ID_M = `<svg viewBox="0 0 60 72" aria-hidden="true"><rect width="60" height="72" rx="6" fill="#F4ECD6"/><circle cx="30" cy="27" r="12" fill="#C9A54C"/><path d="M8 72c2-15 11-23 22-23s20 8 22 23z" fill="#C9A54C"/></svg>`;
+const ID_F = `<svg viewBox="0 0 60 72" aria-hidden="true"><rect width="60" height="72" rx="6" fill="#F4ECD6"/><path d="M30 12c-11 0-17 8-17 18v14c0 3 2 5 5 5h24c3 0 5-2 5-5V30c0-10-6-18-17-18z" fill="#B48E3A"/><circle cx="30" cy="29" r="9" fill="#F4ECD6"/><path d="M8 72c2-14 11-22 22-22s20 8 22 22z" fill="#C9A54C"/></svg>`;
+async function printIdCards(nums){
+  nums = nums.filter(n => S.students[n]); if (!nums.length) return toast("ما فيه متدربين");
+  const w = openPrint(); if (!w) return;
+  let qrcode = null; try { qrcode = await loadQR(); } catch {}
+  const hy = (() => { try { return Number(new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", {year: "numeric"}).format(new Date(today() + "T12:00:00")).replace(/\D/g, "")); } catch { return 0; } })();
+  const yr = hy ? `العام التدريبي ${hy}-${hy + 1} هـ` : "";
+  const card = num => {
+    const st = S.students[num];
+    let svg = ""; if (qrcode) { const q = qrcode(0, "M"); q.addData(`OSOS:${num}`); q.make(); svg = q.createSvgTag({cellSize: 2, margin: 0}); }
+    return `<div class="idc"><div class="top"><img src="${SITE()}logo-mark.png" alt=""><div><b>${esc(INST_AR)}</b><span>${esc(INST_EN)}</span></div></div>
+      <div class="body"><div class="ph">${st.gender === "f" ? ID_F : ID_M}</div><div class="inf"><span class="tag">بطاقة ${st.gender === "f" ? "متدربة" : "متدرب"}</span><span class="nm">${esc(st.name)}</span><span class="no">الرقم التدريبي <b>${esc(num)}</b></span>${yr ? `<span class="yr">${esc(yr)}</span>` : ""}</div><div class="qr">${svg}</div><img class="wm" src="${SITE()}logo-mark.png" alt=""></div>
+      <div class="strip"></div></div>`;
+  };
+  const pages = []; for (let i = 0; i < nums.length; i += 8) pages.push({cls: "cards", noHead: true, noFoot: true, html: `<div class="cardsGrid">${nums.slice(i, i + 8).map(card).join("")}</div>`});
+  fillPrint(w, nums.length === 1 ? `بطاقة ${S.students[nums[0]].name}` : `بطاقات المتدربين (${nums.length})`, pages);
+  logAction("طباعة بطاقات المتدربين", `${nums.length}`);
+}
+
+/* ---------- attendance correction by academic affairs (no lock applies to them) ---------- */
+function attEditor(g){
+  const box = $("#aeBox"); if (!box) return;
+  const ae = S._ae && S._ae.gid === g.id ? S._ae : null;
+  const dates = countable(S.aReport).map(d => d.date).sort().reverse();
+  box.innerHTML = `<div class="card"><h2>تعديل التحضير</h2>
+    <p class="muted" style="margin-top:0">للشؤون الأكاديمية: تصحيح تحضير أي محاضرة حتى لو انقفلت على المدرب. كل تعديل ينسجل في السجل.</p>
+    <div class="row"><select id="aeD" style="width:auto"><option value="">اختر محاضرة مسجلة</option>${dates.map(d => `<option value="${d}" ${ae && ae.date === d ? "selected" : ""}>${esc(fmtDate(d))}</option>`).join("")}</select>
+      <span class="muted">أو تاريخ ثاني</span><input type="date" id="aeN" max="${today()}" style="width:170px" value="${ae && !dates.includes(ae.date) ? ae.date : ""}"><button class="btn sm" id="aeOpen">فتح</button></div>
+    ${ae ? `${isHoliday(ae.date) ? `<div class="notice" style="margin-top:10px">هذا اليوم إجازة (${esc(isHoliday(ae.date).label || "")})، وما ينحسب في الحضور حتى لو حفظته.</div>` : ""}
+      <div class="tbl" style="margin-top:10px"><table><thead><tr><th class="nm">المتدرب</th><th>الحالة</th><th>حضور</th><th>انصراف</th></tr></thead><tbody>
+      ${(g.students || []).map(s => { const r = ae.rec[s.id] || {}; return `<tr><td class="nm">${esc(s.name)}</td><td><div class="seg" role="group" aria-label="الحالة">${["p", "l", "a", "e"].map(k => `<button type="button" class="${k} ${r.st === k ? "on" : ""}" data-aes="${esc(s.id)}" data-v="${k}">${STATUS[k]}</button>`).join("")}</div></td>
+        <td><input type="time" data-aei="${esc(s.id)}" value="${esc(r.in || "")}" style="width:110px;padding:4px" aria-label="وقت الحضور"></td><td><input type="time" data-aeo="${esc(s.id)}" value="${esc(r.out || "")}" style="width:110px;padding:4px" aria-label="وقت الانصراف"></td></tr>`; }).join("")}
+      </tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn pri" id="aeSave">حفظ التعديل</button><button class="btn sm" id="aeAllP">الكل حاضر</button><button class="btn sm" id="aeRest">الباقي غائب</button><button class="btn sm" id="aeClose">إغلاق</button>${ae.dirty ? `<span class="pill l">فيه تعديلات ما انحفظت</span>` : ""}</div>` : ""}</div>`;
+  const open = date => { if (!date) return toast("اختر المحاضرة أو التاريخ"); const d = S.aReport.find(x => x.date === date); S._ae = {gid: g.id, date, rec: clone((d && d.rec) || {}), dirty: false}; attEditor(g); };
+  $("#aeOpen").onclick = () => open($("#aeN").value || $("#aeD").value);
+  $("#aeD").onchange = e => e.target.value && open(e.target.value);
+  if (!ae) return;
+  const mark = () => { ae.dirty = true; };
+  box.querySelectorAll("[data-aes]").forEach(b => b.onclick = () => { const r = ae.rec[b.dataset.aes] = {...(ae.rec[b.dataset.aes] || {})}; r.st = r.st === b.dataset.v ? undefined : b.dataset.v; if (r.st === "a") { delete r.in; delete r.out; } if (!r.st) delete ae.rec[b.dataset.aes]; mark(); attEditor(g); });
+  box.querySelectorAll("[data-aei]").forEach(x => x.onchange = () => { const r = ae.rec[x.dataset.aei] = {...(ae.rec[x.dataset.aei] || {})}; if (x.value) { r.in = x.value; if (!r.st) r.st = "p"; } else delete r.in; mark(); });
+  box.querySelectorAll("[data-aeo]").forEach(x => x.onchange = () => { const r = ae.rec[x.dataset.aeo] = {...(ae.rec[x.dataset.aeo] || {})}; if (x.value) r.out = x.value; else delete r.out; mark(); });
+  $("#aeAllP").onclick = () => { (g.students || []).forEach(s => { ae.rec[s.id] = {...(ae.rec[s.id] || {}), st: "p"}; }); mark(); attEditor(g); };
+  $("#aeRest").onclick = () => { (g.students || []).forEach(s => { if (!ae.rec[s.id] || !ae.rec[s.id].st) ae.rec[s.id] = {st: "a"}; }); mark(); attEditor(g); };
+  $("#aeClose").onclick = () => { S._ae = null; attEditor(g); };
+  $("#aeSave").onclick = async () => {
+    const rec = {}; Object.entries(ae.rec).forEach(([k, r]) => { const c = {}; ["st", "in", "out", "excuse"].forEach(f => { if (r[f]) c[f] = r[f]; }); if (c.st) rec[k] = c; });
+    const d = {groupId: g.id, trainerId: g.trainerId || "", course: g.course, date: ae.date, rec, memberNums: g.memberNums || [], updatedAt: new Date().toISOString(), editedBy: S.adminRole};
+    try { await setDoc(ref(`att/${g.id}_${ae.date}`), d); logAction("تعديل تحضير (الشؤون الأكاديمية)", `${g.course} · ${ae.date}`, "att:" + g.id + ":" + ae.date); toast("انحفظ التعديل"); S._ae = null; }
+    catch (e) { handleWriteErr(e); }
+  };
+}
+
+
+
+/* ---------- signatures & stamp on printed documents ---------- */
+const okImg = v => typeof v === "string" && /^data:image\/(png|jpeg|webp);base64,/.test(v);
+const sgImg = k => okImg((S.sigs || {})[k]) ? `<img class="sgi" src="${S.sigs[k]}" alt="">` : "";
+const stpImg = () => okImg(S.stamp) ? `<img class="stp" src="${S.stamp}" alt="">` : "";
+/* a signature slot: the image sits above the dashed line, the label below */
+const sigSlot = (label, k, withStamp) => `<div>${k ? sgImg(k) : ""}${withStamp ? stpImg() : ""}${label}</div>`;
+/* photos of a signature or stamp on white paper become transparent PNGs, trimmed to the ink */
+async function inkImage(file, maxW){
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = url; });
+    for (const max of [maxW || 700, 520, 400, 300]) {
+      const k = Math.min(1, max / Math.max(img.width, img.height)), cv = document.createElement("canvas");
+      cv.width = Math.max(1, Math.round(img.width * k)); cv.height = Math.max(1, Math.round(img.height * k));
+      const cx = cv.getContext("2d"); cx.drawImage(img, 0, 0, cv.width, cv.height);
+      const d = cx.getImageData(0, 0, cv.width, cv.height), px = d.data;
+      let x0 = cv.width, y0 = cv.height, x1 = -1, y1 = -1;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i], g = px[i + 1], b = px[i + 2], a0 = px[i + 3] / 255;
+        let a = Math.max(255 - r, 255 - g, 255 - b) / 255; a = Math.min(1, Math.max(0, (a - 0.06) / 0.94));
+        const A = a * a0;
+        if (A > 0) { for (let c = 0; c < 3; c++) px[i + c] = Math.max(0, Math.min(255, (px[i + c] - 255 * (1 - a)) / (a || 1))); }
+        px[i + 3] = Math.round(A * 255);
+        if (A > 0.1) { const p = i / 4, x = p % cv.width, y = (p / cv.width) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      }
+      if (x1 < 0) throw new Error("empty");
+      cx.putImageData(d, 0, 0);
+      const out = document.createElement("canvas"); out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+      out.getContext("2d").drawImage(cv, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+      const res = out.toDataURL("image/png"); if (res.length < 650000) return res;
+    }
+    throw new Error("too-big");
+  } finally { URL.revokeObjectURL(url); }
+}
+/* one upload card per signature, shown only to whoever owns it */
+function sigCard(k, title, note){
+  const v = k === "stamp" ? S.stamp : (S.sigs || {})[k];
+  return `<div class="card"><h2>${title}</h2><p class="muted" style="margin-top:0">${note} صوّره على ورقة بيضاء، والبوابة تشيل الخلفية لحالها.</p>
+    <div class="row">${okImg(v) ? `<img src="${v}" alt="${title}" style="max-width:200px;max-height:110px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0 0/14px 14px;border:1px solid var(--line);border-radius:10px;padding:6px">` : `<span class="muted">ما انرفع للحين</span>`}
+    <label class="btn sm" style="cursor:pointer">${okImg(v) ? "تغيير" : "رفع"}<input type="file" accept="image/*" data-sigup="${k}" hidden></label>${okImg(v) ? `<button class="btn sm danger" data-sigdel="${k}">حذف</button>` : ""}</div></div>`;
+}
+function bindSigCards(root){
+  const save = async (k, img) => { await setDoc(ref(k === "stamp" ? "public/stamp" : "sigs/" + k), {img, at: new Date().toISOString()}); if (k === "stamp") S.stamp = img; else S.sigs[k] = img; };
+  root.querySelectorAll("[data-sigup]").forEach(inp => inp.onchange = async () => {
+    const k = inp.dataset.sigup, f = inp.files[0]; if (!f) return;
+    try { toast("جاري تجهيز الصورة…"); await save(k, await inkImage(f, k === "stamp" ? 600 : 700)); logAction(k === "stamp" ? "الختم الإلكتروني" : "التوقيع الإلكتروني", k); toast("انحفظ"); inp.value = ""; render(); }
+    catch (e) { inp.value = ""; e && e.message === "too-big" ? toast("الصورة كبيرة، جرّب أصغر") : e && e.message === "empty" ? toast("ما لقيت توقيع في الصورة") : handleWriteErr(e); }
+  });
+  root.querySelectorAll("[data-sigdel]").forEach(b => b.onclick = async () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; } try { await save(b.dataset.sigdel, ""); logAction("حذف توقيع", b.dataset.sigdel); render(); } catch (e) { handleWriteErr(e); } });
+}
+
+
+/* ---------- signature requests: academic affairs / finance send a document, the administration signs, stamps and returns it ---------- */
+const ADMIN_EMAIL = "admin@" + DOMAIN;
+const SR_ST = {pending: "بانتظار الإدارة", signed: "موقّع ومختوم", rejected: "مرفوض"};
+const SR_PILL = {pending: "l", signed: "p", rejected: "a"};
+let _pdfLib = null;
+const loadPdfLib = () => _pdfLib || (_pdfLib = new Promise((ok, no) => { if (window.PDFLib) return ok(window.PDFLib); const sc = document.createElement("script"); sc.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"; sc.onload = () => ok(window.PDFLib); sc.onerror = no; document.head.appendChild(sc); }));
+const fileToDataURL = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); });
+const myMarks = () => { const r = S.adminRole; return r === "admin" ? [["director", "توقيع مدير المعهد"], ["stamp", "الختم"]] : r === "academic" ? [["academic", "توقيعي (الشؤون الأكاديمية)"]] : r === "finance" ? [["finance", "توقيعي (المالية)"]] : []; };
+const markImg = k => k === "stamp" ? S.stamp : (S.sigs || {})[k];
+/* draw the chosen marks onto the document: images on a canvas, PDFs with pdf-lib on the last page */
+async function applyMarks(data, marks){
+  if (/^data:application\/pdf/.test(data)) {
+    const L = await loadPdfLib();
+    const doc = await L.PDFDocument.load(Uint8Array.from(atob(data.split(",")[1]), c => c.charCodeAt(0)));
+    const page = doc.getPages()[doc.getPageCount() - 1], {width, height} = page.getSize();
+    for (const m of marks) {
+      const png = await doc.embedPng(markImg(m.k)), w = width * m.w, h = w * png.height / png.width;
+      page.drawImage(png, {x: width * m.x - w / 2, y: height * (1 - m.y) - h / 2, width: w, height: h, rotate: L.degrees(m.k === "stamp" ? 8 : 0), opacity: m.k === "stamp" ? 0.9 : 1});
+    }
+    const b64 = await doc.saveAsBase64();
+    if (b64.length > 980000) throw new Error("too-big");
+    return "data:application/pdf;base64," + b64;
+  }
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = data; });
+  const cv = document.createElement("canvas"); cv.width = img.width; cv.height = img.height;
+  const cx = cv.getContext("2d"); cx.fillStyle = "#fff"; cx.fillRect(0, 0, cv.width, cv.height); cx.drawImage(img, 0, 0);
+  for (const m of marks) {
+    const mk = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = markImg(m.k); });
+    const w = cv.width * m.w, h = w * mk.height / mk.width;
+    cx.save(); cx.translate(cv.width * m.x, cv.height * m.y); if (m.k === "stamp") { cx.rotate(-8 * Math.PI / 180); cx.globalAlpha = 0.9; }
+    cx.drawImage(mk, -w / 2, -h / 2, w, h); cx.restore();
+  }
+  for (const q of [0.85, 0.75, 0.6, 0.5]) { const out = cv.toDataURL("image/jpeg", q); if (out.length < 900000) return out; }
+  throw new Error("too-big");
+}
+/* the placing screen: click on the document to put each mark; PDFs get preset spots on the last page */
+function placeMarks(title, data, onDone){
+  const isPdf = /^data:application\/pdf/.test(data), avail = myMarks().filter(([k]) => okImg(markImg(k)));
+  const marks = []; let cur = avail[0] && avail[0][0];
+  S._modalGroup = null; S._finModal = null;
+  const draw = () => {
+    $("#modalBox").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">${esc(title)}</h2><button class="btn sm" id="pmx">إلغاء</button></div>
+      ${avail.length ? `<div class="row"><span class="muted">اختر:</span>${avail.map(([k, l]) => `<button class="btn sm ${cur === k ? "pri" : ""}" data-mk="${k}">${l}</button>`).join("")}<input type="range" id="pmW" min="8" max="40" value="${cur === "stamp" ? 18 : 22}" aria-label="الحجم" style="width:120px"><span class="muted">الحجم</span></div>
+      <p class="muted" style="margin:0">${isPdf ? "اضغط مكان من الأماكن تحت، ويتحط على آخر صفحة في الملف." : "اضغط على المكان في المستند اللي تبي يتحط فيه."}</p>` : `<div class="notice err">ما رفعت توقيعك أو الختم للحين. ارفعه من «النظام»${S.adminRole === "finance" ? " أو «الإعدادات» في المالية" : ""}.</div>`}
+      ${isPdf ? `<div class="pdfPos">${[["أعلى يمين", .8, .12], ["أعلى يسار", .2, .12], ["وسط", .5, .5], ["أسفل يمين", .8, .86], ["أسفل الوسط", .5, .86], ["أسفل يسار", .2, .86]].map(([l, x, y]) => `<button class="btn sm" data-px="${x}" data-py="${y}">${l}</button>`).join("")}</div>
+        <p class="muted">${marks.length ? marks.map(m => `${(avail.find(a => a[0] === m.k) || [, ""])[1]}: ${m.label}`).join(" · ") : "ما فيه شي محطوط"}</p>`
+        : `<div class="pmWrap" id="pmWrap"><img src="${data}" alt="المستند" id="pmImg">${marks.map((m, i) => `<img class="pmMark" src="${markImg(m.k)}" alt="" style="left:${m.x * 100}%;top:${m.y * 100}%;width:${m.w * 100}%;${m.k === "stamp" ? "transform:translate(-50%,-50%) rotate(-8deg)" : ""}" data-mi="${i}">`).join("")}</div>`}
+      <div class="row">${marks.length ? `<button class="btn sm" id="pmUndo">تراجع</button>` : ""}<button class="btn gold" id="pmOk" ${marks.length ? "" : "disabled"}>اعتماد</button></div>`;
+    $("#pmx").onclick = () => { closeModal(); onDone(null); };
+    $("#modalBox").querySelectorAll("[data-mk]").forEach(b => b.onclick = () => { cur = b.dataset.mk; draw(); });
+    const width = () => Number(($("#pmW") || {}).value || 20) / 100;
+    if ($("#pmImg")) $("#pmImg").onclick = e => { if (!cur) return; const r = e.target.getBoundingClientRect(); marks.push({k: cur, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, w: width()}); draw(); };
+    $("#modalBox").querySelectorAll("[data-px]").forEach(b => b.onclick = () => { if (!cur) return; marks.push({k: cur, x: Number(b.dataset.px), y: Number(b.dataset.py), w: width() * 0.8, label: b.textContent}); draw(); });
+    if ($("#pmUndo")) $("#pmUndo").onclick = () => { marks.pop(); draw(); };
+    $("#pmOk").onclick = async () => { const b = $("#pmOk"); b.disabled = true; b.textContent = "جاري التجهيز…"; try { const out = await applyMarks(data, marks); closeModal(); onDone(out); } catch (e) { console.error(e); b.disabled = false; b.textContent = "اعتماد"; toast(e && e.message === "too-big" ? "الملف كبير بعد التوقيع" : "تعذّر تجهيز الملف"); } };
+  };
+  $("#modal").classList.add("on"); draw();
+}
+const openData = (data, name) => { const a = document.createElement("a"); a.href = data; a.download = name; document.body.appendChild(a); a.click(); a.remove(); };
+function signRequests(el){
+  const admin = S.adminRole === "admin";
+  if (!S.signReqs) {
+    el.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`;
+    const q = admin ? collection(db, "signReqs") : query(collection(db, "signReqs"), where("byEmail", "==", S.authUser.email));
+    S.subs.push(onSnapshot(q, snap => { S.signReqs = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, e => { console.error(e); el.innerHTML = `<div class="notice err">تعذّر التحميل، تأكد من تحديث قواعد Firebase.</div>`; }));
+    return;
+  }
+  const f = S.srF || (admin ? "pending" : "all");
+  const list = S.signReqs.filter(r => f === "all" || r.status === f).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  el.innerHTML = `${admin ? "" : `<div class="card"><h2>إرسال مستند للتوقيع والختم</h2>
+    <p class="muted" style="margin-top:0">خطاب أو عقد أو أي مستند يحتاج توقيع مدير المعهد والختم. ترفقه هنا، وتقدر تحط توقيعك عليه أول، ويوصل لبوابة الإدارة. لما توقّعه الإدارة وتختمه يرجع لك هنا جاهز للتنزيل.</p>
+    <div class="row"><input type="text" id="srT" class="grow" placeholder="عنوان المستند، مثل: خطاب تعريف للمتدربة لجين" maxlength="120"></div>
+    <div class="row" style="margin-top:8px"><label class="f grow" for="srF">المستند (صورة أو PDF، أقل من 600 كيلوبايت)<input type="file" id="srF" accept="image/*,application/pdf"></label></div>
+    <label class="f" for="srN" style="margin-top:8px">ملاحظة للإدارة (اختياري)<input type="text" id="srN" maxlength="300"></label>
+    <div class="row" style="margin-top:8px"><button class="btn gold" id="srSend">التالي: أحط توقيعي وأرسل</button><button class="btn sm" id="srSend2">أرسل بدون توقيعي</button></div></div>`}
+  <div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${[["pending", "بانتظار الإدارة"], ["signed", "موقّعة"], ["rejected", "مرفوضة"], ["all", "الكل"]].map(([k, v]) => `<button class="tab ${f === k ? "on" : ""}" data-srf="${k}">${v} (${k === "all" ? S.signReqs.length : S.signReqs.filter(r => r.status === k).length})</button>`).join("")}</div></div>
+  <div class="list">${list.map(r => `<div class="item"><div class="grow"><div class="t">${esc(r.title)} <span class="pill ${SR_PILL[r.status]}">${SR_ST[r.status]}</span></div>
+      <div class="muted">${admin ? `من ${esc(ROLES[r.from] || r.from)} · ` : ""}${esc((r.at || "").slice(0, 10))}${r.note ? " · " + esc(r.note) : ""}${r.reason ? " · سبب الرفض: " + esc(r.reason) : ""}</div></div>
+      <button class="btn sm" data-srv="${esc(r.id)}">المستند</button>
+      ${r.status === "signed" ? `<button class="btn sm gold" data-srd="${esc(r.id)}">تنزيل الموقّع</button>` : ""}
+      ${admin && r.status === "pending" ? `<button class="btn sm pri" data-srs="${esc(r.id)}">توقيع وختم</button><button class="btn sm danger" data-srr="${esc(r.id)}">رفض</button>` : ""}
+      ${!admin && r.status !== "signed" ? `<button class="btn sm danger" data-srx="${esc(r.id)}">حذف</button>` : ""}</div>`).join("") || `<div class="card empty">ما فيه طلبات</div>`}</div>`;
+  el.querySelectorAll("[data-srf]").forEach(b => b.onclick = () => { S.srF = b.dataset.srf; render(); });
+  const getFile = async id => { const x = await getDoc(ref("signFiles/" + id)); return x.exists() ? x.data().data : null; };
+  const ext = d => /^data:application\/pdf/.test(d) ? "pdf" : "jpg";
+  el.querySelectorAll("[data-srv]").forEach(b => b.onclick = async () => { const r = S.signReqs.find(x => x.id === b.dataset.srv); try { const d = await getFile(r.id); if (d) openData(d, `${r.title}.${ext(d)}`); else toast("الملف غير موجود"); } catch (e) { handleWriteErr(e); } });
+  el.querySelectorAll("[data-srd]").forEach(b => b.onclick = async () => { const r = S.signReqs.find(x => x.id === b.dataset.srd); try { const d = await getFile(r.id + "_signed"); if (d) openData(d, `${r.title} - موقّع.${ext(d)}`); else toast("الملف غير موجود"); } catch (e) { handleWriteErr(e); } });
+  el.querySelectorAll("[data-srx]").forEach(b => b.onclick = async () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; } const bt = writeBatch(db); bt.delete(ref("signReqs/" + b.dataset.srx)); bt.delete(ref("signFiles/" + b.dataset.srx)); try { await bt.commit(); } catch (e) { handleWriteErr(e); } });
+  el.querySelectorAll("[data-srr]").forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="srRR" placeholder="سبب الرفض" style="width:160px">`); b.textContent = "تأكيد الرفض"; return; }
+    const reason = (($("#srRR") || {}).value || "").trim(); if (!reason) return toast("اكتب سبب الرفض");
+    try { await setDoc(ref("signReqs/" + b.dataset.srr), {status: "rejected", reason, doneAt: new Date().toISOString()}, {merge: true}); logAction("رفض طلب توقيع", reason); } catch (e) { handleWriteErr(e); }
+  });
+  el.querySelectorAll("[data-srs]").forEach(b => b.onclick = async () => {
+    const r = S.signReqs.find(x => x.id === b.dataset.srs); let d;
+    try { d = await getFile(r.id); } catch (e) { return handleWriteErr(e); }
+    if (!d) return toast("الملف غير موجود");
+    placeMarks(`توقيع وختم: ${r.title}`, d, async out => {
+      if (!out) return;
+      const bt = writeBatch(db);
+      bt.set(ref("signFiles/" + r.id + "_signed"), {reqId: r.id, data: out});
+      bt.set(ref("signReqs/" + r.id), {status: "signed", doneAt: new Date().toISOString()}, {merge: true});
+      try { await bt.commit(); logAction("توقيع وختم مستند", r.title); toast("انوقّع ورجع للمرسل"); } catch (e) { handleWriteErr(e); }
+    });
+  });
+  const send = async withMine => {
+    const title = $("#srT").value.trim(), file = $("#srF").files[0];
+    if (!title) return toast("اكتب عنوان المستند"); if (!file) return toast("اختر المستند");
+    let data;
+    try {
+      if (file.type === "application/pdf") { if (file.size > 600000) return toast("ملف PDF كبير، لازم أقل من 600 كيلوبايت"); data = await fileToDataURL(file); }
+      else data = await compressImage(file);
+    } catch { return toast("تعذّر قراءة الملف"); }
+    const note = $("#srN").value.trim();
+    const go = async doc => {
+      if (!doc) return;
+      const id = "sr-" + uid() + uid(), bt = writeBatch(db);
+      bt.set(ref("signReqs/" + id), {title, note, from: S.adminRole, byEmail: S.authUser.email, status: "pending", at: new Date().toISOString()});
+      bt.set(ref("signFiles/" + id), {reqId: id, data: doc});
+      try { await bt.commit(); logAction("طلب توقيع", title); toast("انرسل للإدارة"); render(); } catch (e) { handleWriteErr(e); }
+    };
+    if (withMine) placeMarks(`توقيعك على: ${title}`, data, go); else go(data);
+  };
+  if ($("#srSend")) { $("#srSend").onclick = () => send(true); $("#srSend2").onclick = () => send(false); }
+}
+
+/* ---------- short courses: participants, pass marks, certificates sent by WhatsApp ---------- */
+function adminCourses(el){
+  if (!S.courses) {
+    el.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`;
+    S.subs.push(onSnapshot(collection(db, "courses"), snap => { S.courses = {}; snap.docs.forEach(d => S.courses[d.id] = {id: d.id, ...d.data()}); if (S.aTab === "courses" && !busyEditing()) { render(); if (S._crsOpen && $("#modal").classList.contains("on")) openCourse(S._crsOpen); } }, e => { console.error(e); el.innerHTML = `<div class="notice err">تعذّر التحميل، تأكد من تحديث قواعد Firebase.</div>`; }));
+    return;
+  }
+  const list = Object.values(S.courses).sort((a, b) => (b.from || "").localeCompare(a.from || ""));
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">الدورات والشهادات</h2><button class="btn gold sm" id="crNew">+ دورة جديدة</button></div>
+    <p class="muted" style="margin:8px 0 0">دورات قصيرة وورش عمل لها شهادة حضور خاصة: تحدد الدورة ومدتها، وتضيف المشاركين، وبعد ما تخلص تعلّم على المجتازين وتصدر لهم شهادات مختومة وترسلها بالواتساب.${S.stamp ? "" : ` <b>ارفع الختم الإلكتروني من «النظام» عشان يظهر على الشهادات.</b>`}</p></div>
+  <div class="list">${list.map(c => { const ps = c.participants || [], pass = ps.filter(p => p.passed).length, iss = ps.filter(p => p.cert).length;
+    return `<div class="item"><div class="grow"><div class="t">${esc(c.title)}</div><div class="muted">${c.from ? dH(c.from) : ""}${c.to && c.to !== c.from ? " ← " + dH(c.to) : ""}${c.hours ? ` · ${esc(c.hours)} ساعة` : ""}${c.trainer ? ` · ${esc(c.trainer)}` : ""}</div></div>
+      <span class="pill">${ps.length} مشارك</span><span class="pill p">${pass} مجتاز</span>${iss ? `<span class="pill e">${iss} شهادة</span>` : ""}<button class="btn sm" data-cro="${esc(c.id)}">فتح</button></div>`; }).join("") || `<div class="card empty">ما فيه دورات بعد.</div>`}</div>`;
+  $("#crNew").onclick = () => openCourse(null);
+  el.querySelectorAll("[data-cro]").forEach(b => b.onclick = () => openCourse(b.dataset.cro));
+}
+const certMsg = (p, c, code) => `مبروك ${p.name}\n${p.gender === "f" ? "أتممتِ" : "أتممت"} دورة «${c.title}» في ${INST_AR}.\n\nشهادتك جاهزة، تقدر تعرضها وتطبعها من الرابط:\n${verifyUrl(code)}\n\nرمز التحقق: ${code}`;
+function openCourse(id){
+  const c = id ? clone(S.courses[id]) : {title: "", hours: "", from: today(), to: today(), trainer: "", place: "", participants: []};
+  S._crsOpen = id; S._modalGroup = null; S._finModal = null;
+  const save = async (msg, quiet) => {
+    const d = {...c}; delete d.id;
+    const nid = id || "c-" + uid() + uid();
+    try { await setDoc(ref("courses/" + nid), d); if (!id) { id = nid; S._crsOpen = nid; } S.courses[nid] = {id: nid, ...d}; if (msg) logAction(msg, c.title); if (!quiet) toast("انحفظ"); draw(); return true; }
+    catch (e) { handleWriteErr(e); return false; }
+  };
+  const draw = () => {
+    const ps = c.participants || [];
+    const studs = Object.values(S.students).sort((a, b) => a.name.localeCompare(b.name, "ar"));
+    $("#modalBox").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0;font-family:var(--display);color:var(--green);font-weight:600">${id ? esc(c.title) : "دورة جديدة"}</h2><button class="btn sm" id="crx">إغلاق</button></div>
+    <div class="card" style="background:var(--bg)"><h3>بيانات الدورة</h3>
+      <label class="f" for="crT">اسم الدورة<input type="text" id="crT" value="${esc(c.title)}" placeholder="مثل: مهارات كتابة العقود"></label>
+      <div class="row" style="margin-top:8px">
+        <label class="f" for="crF" style="width:160px">من<input type="date" id="crF" value="${esc(c.from || "")}"></label>
+        <label class="f" for="crTo" style="width:160px">إلى<input type="date" id="crTo" value="${esc(c.to || "")}"></label>
+        <label class="f" for="crH" style="width:120px">عدد الساعات<input type="number" id="crH" min="1" value="${esc(c.hours || "")}"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="f grow" for="crTr">المدرب/ة<input type="text" id="crTr" list="crTrL" value="${esc(c.trainer || "")}"><datalist id="crTrL">${Object.values(S.trainers).map(t => `<option value="${esc(trainerTitle(t))}">`).join("")}</datalist></label>
+        <label class="f grow" for="crP">المكان<input type="text" id="crP" value="${esc(c.place || "")}" placeholder="قاعة 1 / عن بُعد"></label>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="btn pri sm" id="crSave">حفظ البيانات</button>${id ? `<button class="btn sm danger" id="crDel">حذف الدورة</button>` : ""}</div></div>
+    ${id ? `<div class="card" style="background:var(--bg)"><h3>إضافة مشاركين</h3>
+      <div class="row"><input type="text" id="crS" list="crSL" class="grow" placeholder="اكتب اسم متدرب أو رقمه"><datalist id="crSL">${studs.map(s => `<option value="${esc(s.num)} · ${esc(s.name)}">`).join("")}</datalist><button class="btn sm" id="crSAdd">+ إضافة</button></div>
+      <div class="row" style="margin-top:8px"><select id="crG" class="grow"><option value="">أو أضف كل طلاب مقرر…</option>${sortedGroups().map(g => `<option value="${esc(g.id)}">${esc(g.course)} · ${esc(tName(g.trainerId))} (${(g.memberNums || []).length})</option>`).join("")}</select><button class="btn sm" id="crGAdd">إضافة الكل</button></div>
+      <div class="row" style="margin-top:8px"><input type="text" id="crXN" class="grow" placeholder="مشارك من خارج المعهد: الاسم الكامل"><select id="crXG" style="width:auto"><option value="m">ذكر</option><option value="f">أنثى</option></select><input type="tel" id="crXP" dir="ltr" placeholder="05xxxxxxxx" style="width:140px"><button class="btn sm" id="crXAdd">+ إضافة</button></div></div>
+    <div><div class="row" style="justify-content:space-between"><h3 style="margin:0">المشاركين (${ps.length})</h3><div class="row"><button class="btn sm" id="crAllP">الكل مجتاز</button><button class="btn gold sm" id="crIssue">إصدار شهادات المجتازين (${ps.filter(p => p.passed && !p.cert).length})</button>${ps.some(p => p.cert) ? `<button class="btn sm" id="crPrint">طباعة كل الشهادات</button>` : ""}</div></div>
+      <div class="list" style="margin-top:8px">${ps.map((p, i) => `<div class="item" style="padding:8px 12px"><label class="row" style="gap:6px;cursor:pointer" for="crp-${i}"><input type="checkbox" id="crp-${i}" data-pass="${i}" ${p.passed ? "checked" : ""} ${p.cert ? "disabled" : ""}> مجتاز</label>
+        <div class="grow"><b>${esc(p.name)}</b> <span class="pill ${p.gender}">${GENDER[p.gender] || ""}</span><div class="muted">${p.num ? esc(p.num) : "من خارج المعهد"}${p.phone ? ` · <span dir="ltr">${esc(p.phone)}</span>` : ` · <span style="color:var(--abs)">بدون جوال</span>`}${p.cert ? ` · شهادة ${esc(p.cert)}` : ""}${p.sent ? " · أُرسلت" : ""}</div></div>
+        ${p.cert && p.phone ? `<a class="btn sm gold" target="_blank" rel="noopener" data-send="${i}" href="https://wa.me/${normPhone(p.phone)}?text=${encodeURIComponent(certMsg(p, c, p.cert))}">إرسال بالواتساب</a>` : ""}
+        ${p.cert ? `<button class="btn sm" data-cp="${i}">الشهادة</button>` : `<button class="btn sm danger" data-prm="${i}">حذف</button>`}</div>`).join("") || `<span class="muted">ما فيه مشاركين</span>`}</div>
+      ${ps.some(p => p.cert) ? `<p class="muted">الواتساب يفتح رسالة جاهزة فيها رابط الشهادة لكل مشارك، تضغط إرسال. المتدرب المسجّل في المعهد يلقى الشهادة بعد في «شهاداتي» ببوابة الطلاب.</p>` : ""}</div>` : `<p class="muted">احفظ بيانات الدورة أول، وبعدها تضيف المشاركين.</p>`}`;
+    $("#modal").classList.add("on");
+    $("#crx").onclick = () => { S._crsOpen = null; closeModal(); };
+    const readHead = () => { c.title = $("#crT").value.trim(); c.from = $("#crF").value; c.to = $("#crTo").value || c.from; c.hours = $("#crH").value.trim(); c.trainer = $("#crTr").value.trim(); c.place = $("#crP").value.trim(); };
+    $("#crSave").onclick = () => { readHead(); if (!c.title) return toast("اكتب اسم الدورة"); if (c.to && c.from && c.to < c.from) return toast("تاريخ النهاية قبل البداية"); save(id ? "تعديل دورة" : "دورة جديدة"); };
+    if ($("#crDel")) $("#crDel").onclick = async () => { const b = $("#crDel"); if ((c.participants || []).some(p => p.cert)) return toast("الدورة فيها شهادات صادرة. ألغِ الشهادات أول أو خلّها"); if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; } try { await deleteDoc(ref("courses/" + id)); delete S.courses[id]; logAction("حذف دورة", c.title); S._crsOpen = null; closeModal(); } catch (e) { handleWriteErr(e); } };
+    if (!id) return;
+    const has = p => (c.participants || []).some(x => (p.num && x.num === p.num) || (!p.num && !x.num && norm(x.name) === norm(p.name)));
+    const addStudent = num => { const st = S.students[num]; if (!st) return false; const p = {pid: "p" + uid(), num, name: st.name, gender: st.gender, phone: (S.stPhones || {})[num] || "", passed: false}; if (has(p)) return false; c.participants = [...(c.participants || []), p]; return true; };
+    $("#crSAdd").onclick = () => { const v = $("#crS").value.trim(), num = (v.match(/\d{8}/) || [])[0] || (Object.values(S.students).find(s => norm(s.name) === norm(v)) || {}).num; if (!num || !S.students[num]) return toast("ما لقيت المتدرب، اختره من القائمة"); if (!addStudent(num)) return toast("مضاف من قبل"); save("إضافة مشارك لدورة", true); };
+    $("#crGAdd").onclick = () => { const g = S.groups[$("#crG").value]; if (!g) return toast("اختر المقرر"); let n = 0; (g.memberNums || []).forEach(num => { if (addStudent(num)) n++; }); if (!n) return toast("كلهم مضافين"); save(`إضافة ${n} مشارك لدورة`, true); };
+    $("#crXAdd").onclick = () => { const name = $("#crXN").value.trim().replace(/\s+/g, " "), ph = $("#crXP").value.trim() ? normPhone($("#crXP").value) : ""; if (name.split(" ").length < 2) return toast("اكتب الاسم الكامل"); if (ph && !/^9665\d{8}$/.test(ph)) return toast("رقم الجوال غير صحيح"); const p = {pid: "p" + uid(), num: "", name, gender: $("#crXG").value, phone: ph, passed: false}; if (has(p)) return toast("مضاف من قبل"); c.participants = [...(c.participants || []), p]; save("إضافة مشارك خارجي لدورة", true); };
+    $("#modalBox").querySelectorAll("[data-pass]").forEach(x => x.onchange = () => { c.participants[Number(x.dataset.pass)].passed = x.checked; save("", true); });
+    $("#modalBox").querySelectorAll("[data-prm]").forEach(b => b.onclick = () => { if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; } c.participants.splice(Number(b.dataset.prm), 1); save("حذف مشارك من دورة", true); });
+    $("#crAllP").onclick = () => { c.participants.forEach(p => { if (!p.cert) p.passed = true; }); save("", true); };
+    $("#modalBox").querySelectorAll("[data-send]").forEach(a => a.addEventListener("click", () => { const p = c.participants[Number(a.dataset.send)]; if (!p.sent) { p.sent = true; save("إرسال شهادة دورة", true); } }));
+    const certOf = p => ({code: p.cert, kind: "course", key: `${id}_${p.pid}`, courseId: id, num: p.num || "", name: p.name, gender: p.gender, course: c.title, hours: c.hours || "", from: c.from || "", to: c.to || "", trainer: c.trainer || "", date: p.certDate || today(), issuedBy: S.adminRole, revoked: false});
+    $("#modalBox").querySelectorAll("[data-cp]").forEach(b => b.onclick = () => printCerts([certOf(c.participants[Number(b.dataset.cp)])]));
+    if ($("#crPrint")) $("#crPrint").onclick = () => printCerts(c.participants.filter(p => p.cert).map(certOf));
+    $("#crIssue").onclick = async () => {
+      readHead();
+      const todo = c.participants.filter(p => p.passed && !p.cert); if (!todo.length) return toast("علّم على المجتازين أول");
+      if (!c.title) return toast("اكتب اسم الدورة واحفظها");
+      const b = writeBatch(db);
+      todo.forEach(p => { p.cert = certCode(); p.certDate = today(); b.set(ref("certs/" + p.cert), certOf(p)); });
+      const d = {...c}; delete d.id; b.set(ref("courses/" + id), d);
+      try { await b.commit(); S.courses[id] = {id, ...d}; logAction("إصدار شهادات دورة", `${c.title} · ${todo.length}`); toast(`انصدرت ${todo.length} شهادة. أرسلها بالواتساب أو اطبعها`); draw(); }
+      catch (e) { todo.forEach(p => { delete p.cert; delete p.certDate; }); handleWriteErr(e); }
+    };
+  };
+  draw();
+}
+
 /* ---------- audit log tab ---------- */
 function adminLogs(el){
   if (!S.unsubLogs) {
@@ -2380,7 +2850,7 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses"];
 async function backupAll(note){
   const out = {kind: "asas-backup-v1", at: new Date().toISOString(), note: note || "", data: {}};
   for (const c of ALL_COLLS) {
@@ -2501,11 +2971,11 @@ const paysOf = num => (S.pays || []).filter(p => p.num === num);
 
 function adminFinance(el){
   const t = S.finTab || "sum";
-  const tabs = [["sum", "الملخص"], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ["set", "الإعدادات"]];
+  const tabs = [["sum", "الملخص"], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"]] : []), ["set", "الإعدادات"]];
   el.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${t === k ? "on" : ""}" data-ft="${k}">${v}</button>`).join("")}</div></div><div id="fb"></div>`;
   el.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { S.finTab = b.dataset.ft; render(); });
   if (!S.finSet) { $("#fb").innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
-  ({sum: finSummary, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, set: finSettings})[t]($("#fb"));
+  ({sum: finSummary, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, set: finSettings})[t]($("#fb"));
 }
 function finRows(){
   return Object.values(S.students).map(s => { const acc = (S.finAcc || {})[s.num]; return {s, acc, st: acc ? accStatus(acc, paysOf(s.num)) : {net: 0, paid: 0, remaining: 0, overdue: 0, status: "none"}}; });
@@ -2691,7 +3161,7 @@ function receiptHTML(p, acc, allPays){
     <tr><td class="n"><b>المبلغ المتبقي</b></td><td class="n"><b>${SAR(after)}</b></td></tr>
   </tbody></table>
   <p style="font-size:10.5px;color:#666;margin-top:10px">سند قبض داخلي، وليس فاتورة ضريبية.</p>
-  <div class="sig"><div>المحاسب</div><div>الختم</div></div>`;
+  <div class="sig">${sigSlot("المحاسب", "finance")}${sigSlot("الختم", "", true)}</div>`;
 }
 function statementHTML(s, acc, st, pays){
   return `<h1>كشف حساب متدرب</h1>
@@ -2699,7 +3169,7 @@ function statementHTML(s, acc, st, pays){
   <table><thead><tr><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>المتأخر</th></tr></thead><tbody><tr><td>${SAR(st.net)}</td><td>${SAR(st.paid)}</td><td>${SAR(st.remaining)}</td><td>${SAR(st.overdue)}</td></tr></tbody></table>
   <h3 style="color:#1F5136">جدول الدفعات</h3><table><thead><tr><th>#</th><th>الاستحقاق</th><th>المبلغ</th><th>الحالة</th></tr></thead><tbody>${st.sched.map((i, k) => `<tr><td>${i.label ? esc(i.label) : k + 1}</td><td>${dH(i.due)}</td><td>${SAR(i.amount)}</td><td>${INST_ST[i.st]}</td></tr>`).join("")}</tbody></table>
   <h3 style="color:#1F5136">الدفعات المستلمة</h3><table><thead><tr><th>السند</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th></tr></thead><tbody>${pays.filter(p => !p.void).map(p => `<tr><td>${esc(p.receiptNo)}</td><td>${dH(p.date)}</td><td>${SAR(p.amount)}</td><td>${esc(p.method)}</td></tr>`).join("") || `<tr><td colspan="4">ما فيه دفعات</td></tr>`}</tbody></table>
-  <div class="sig"><div>المالية</div><div>الختم</div></div>`;
+  <div class="sig">${sigSlot("المالية", "finance")}${sigSlot("الختم", "", true)}</div>`;
 }
 function finPayments(el){
   const m = S.payM || today().slice(0, 7);
@@ -2736,6 +3206,8 @@ function finSettings(el){
     <div class="list">${(S.finSet.partners || []).map((p, i) => `<div class="item"><div class="grow"><b>${esc(p.name)}</b> <span class="pill">${esc(p.type)}</span><div class="muted">${p.kind === "percent" ? `${p.value}% من المبلغ المحصّل من الطالب` : `${SAR(p.value)} عن كل طالب بعد أول دفعة`}${p.phone ? ` · <span dir="ltr">${esc(p.phone)}</span>` : ""}</div></div><button class="btn sm danger" data-ptdel="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه شركاء</span>`}</div>
     <div class="row" style="margin-top:10px"><input type="text" id="ptN" class="grow" placeholder="اسم الشريك"><select id="ptT" style="width:auto"><option>إعلامي</option><option>مدرب</option><option>جهة</option><option>أخرى</option></select><input type="tel" id="ptP" dir="ltr" placeholder="الجوال" style="width:140px"></div>
     <div class="row" style="margin-top:8px"><select id="ptK" style="width:auto"><option value="fixed">مبلغ ثابت عن كل طالب</option><option value="percent">نسبة من المحصّل</option></select><input type="number" id="ptV" min="0" placeholder="المبلغ أو النسبة" style="width:150px"><button class="btn gold sm" id="ptAdd">+ إضافة شريك</button></div></div>`;
+  el.insertAdjacentHTML("beforeend", sigCard("finance", "توقيع المالية", "يظهر على سندات القبض والصرف وكشوف الحساب والتقرير المالي."));
+  bindSigCards(el);
   const saveKey = async (k, list, msg) => { try { await setDoc(ref("fin/settings"), {[k]: list}, {merge: true}); S.finSet[k] = list; logAction(msg, ""); toast("انحفظ"); render(); } catch (e) { handleWriteErr(e); } };
   $("#etAdd").onclick = () => { const name = $("#etN").value.trim(), fee = Number($("#etF").value); if (!name || !(fee > 0)) return toast("اكتب الاسم والمبلغ"); saveKey("extraTypes", [...(S.finSet.extraTypes || []), {name, fee}], "إضافة نوع رسوم: " + name); };
   el.querySelectorAll("[data-etdel]").forEach(b => b.onclick = () => { const l = clone(S.finSet.extraTypes || []); l.splice(Number(b.dataset.etdel), 1); saveKey("extraTypes", l, "حذف نوع رسوم"); });
@@ -2905,7 +3377,7 @@ function finPartners(el){
       const amount = Math.round((Number($("#cA").value) || 0) * 100) / 100; if (amount <= 0 || amount > x.balance + 0.01) return toast("المبلغ لازم يكون بين صفر والباقي");
       const w = openPrint(); if (!w) return;
       const d = {partnerId: x.p.id, name: x.p.name, amount, method: $("#cM").value, date: $("#cD").value || today(), note: $("#cN").value.trim(), by: S.adminRole, void: false, at: new Date().toISOString()};
-      try { await setDoc(ref("commPays/c-" + uid() + uid()), d); logAction("صرف عمولة", `${x.p.name} · ${SAR(amount)}`); fillPrintFin(w, `سند صرف عمولة ${x.p.name}`, [{html: `<h1>سند صرف عمولة</h1><div class="info"><div><b>الشريك:</b> ${esc(d.name)}</div><div><b>التاريخ:</b> ${esc(bothDates(d.date))}</div><div><b>الطريقة:</b> ${esc(d.method)}</div></div><table><tbody><tr><td class="n"><b>المبلغ</b></td><td style="font-size:16px"><b>${SAR(amount)}</b></td></tr><tr><td class="n"><b>الباقي بعد الصرف</b></td><td>${SAR(x.balance - amount)}</td></tr></tbody></table>${d.note ? `<p>ملاحظة: ${esc(d.note)}</p>` : ""}<div class="sig"><div>المالية</div><div>المستلم<br><small>الاسم والتوقيع</small></div></div>`}]); closeModal(); }
+      try { await setDoc(ref("commPays/c-" + uid() + uid()), d); logAction("صرف عمولة", `${x.p.name} · ${SAR(amount)}`); fillPrintFin(w, `سند صرف عمولة ${x.p.name}`, [{html: `<h1>سند صرف عمولة</h1><div class="info"><div><b>الشريك:</b> ${esc(d.name)}</div><div><b>التاريخ:</b> ${esc(bothDates(d.date))}</div><div><b>الطريقة:</b> ${esc(d.method)}</div></div><table><tbody><tr><td class="n"><b>المبلغ</b></td><td style="font-size:16px"><b>${SAR(amount)}</b></td></tr><tr><td class="n"><b>الباقي بعد الصرف</b></td><td>${SAR(x.balance - amount)}</td></tr></tbody></table>${d.note ? `<p>ملاحظة: ${esc(d.note)}</p>` : ""}<div class="sig">${sigSlot("المالية", "finance")}<div>المستلم<br><small>الاسم والتوقيع</small></div></div>`}]); closeModal(); }
       catch (e) { w.close(); handleWriteErr(e); }
     };
   });
@@ -2931,7 +3403,7 @@ function finReport(el){
       <tr><td class="n"><b>الصافي</b></td><td style="font-size:16px"><b>${SAR(f.net)}</b></td></tr>
     </tbody></table>
     <h3 style="color:#1F5136">سنة ${esc(y)}</h3><table><thead><tr><th>الشهر</th><th>الإيرادات</th><th>المصروفات</th><th>الصافي</th></tr></thead><tbody>${months.map(x => `<tr><td>${x.k}</td><td>${SAR(x.income)}</td><td>${SAR(x.out)}</td><td>${SAR(x.net)}</td></tr>`).join("")}</tbody></table>
-    <div class="sig"><div>المالية</div><div>الإدارة</div></div>`;
+    <div class="sig">${sigSlot("المالية", "finance")}${sigSlot("الإدارة", "director", true)}</div>`;
   el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">التقرير المالي الشهري</h2><div class="row"><input type="month" id="rpM" value="${esc(m)}" style="width:170px"><button class="btn sm pri" id="rpP">طباعة / PDF</button><button class="btn sm" id="rpX">Excel</button></div></div>
     <div class="stats" style="margin-top:10px"><div class="stat"><div class="n">${SAR(f.income)}</div><div class="l">الإيرادات</div></div><div class="stat"><div class="n">${SAR(f.out)}</div><div class="l">المصروفات</div></div><div class="stat"><div class="n" style="color:${f.net < 0 ? "var(--abs)" : "var(--green)"}">${SAR(f.net)}</div><div class="l">الصافي</div></div></div></div>
   <div class="card"><h2>تفصيل المصروفات</h2><div class="list">${[...Object.entries(byCat), ["رواتب المدربين", f.salT], ["عمولات الشركاء", f.comT]].filter(([, v]) => v).map(([k, v]) => `<div class="item"><span class="grow">${esc(k)}</span><b>${SAR(v)}</b><span class="muted">${f.out ? Math.round(v / f.out * 100) : 0}%</span></div>`).join("") || `<span class="muted">ما فيه مصروفات</span>`}</div></div>
@@ -3001,7 +3473,7 @@ function salaryHTML(r){
   <div class="info"><div><b>المدرب/ة:</b> ${esc(r.name)}</div><div><b>عن شهر:</b> ${esc(r.month)}</div><div><b>تاريخ الصرف:</b> ${esc(bothDates(r.paidDate))}</div><div><b>الطريقة:</b> ${esc(r.method)}</div></div>
   <table><tbody><tr><td class="n"><b>الراتب</b></td><td>${SAR(r.base)}</td></tr><tr><td class="n"><b>إضافي</b></td><td>${SAR(r.bonus)}</td></tr><tr><td class="n"><b>خصم</b></td><td>${SAR(r.deduct)}</td></tr><tr><td class="n"><b>الصافي</b></td><td style="font-size:16px"><b>${SAR(r.net)}</b></td></tr></tbody></table>
   ${r.note ? `<p>ملاحظة: ${esc(r.note)}</p>` : ""}
-  <div class="sig"><div>المالية</div><div>المستلم<br><small>الاسم والتوقيع</small></div></div>`;
+  <div class="sig">${sigSlot("المالية", "finance")}<div>المستلم<br><small>الاسم والتوقيع</small></div></div>`;
 }
 function studentFin(el){
   const acc = S.myFin; if (!acc) { el.innerHTML = `<div class="card empty">ما فيه حساب مالي.</div>`; return; }
@@ -3140,6 +3612,7 @@ function adminReport(el){
   const cand = (g.students || []).filter(s => s.sid).map(s => { const st = absStats(g, s.id, docs); const pct = Math.round((100 - st.absPct) * 10) / 10; const att = docs.length > 0 && pct >= th.certMin, fee = feeOf(s.sid); return {s, st, pct, att, fee, ok: att && fee.ok, c: (S.certs || {})[`${s.sid}_${g.id}`]}; });
   const toIssue = cand.filter(x => x.ok && !(x.c && !x.c.revoked));
   $("#rbody").innerHTML = `<div class="card"><div class="row" style="margin-bottom:10px"><button class="btn pri sm" id="rPdf">طباعة / PDF</button><button class="btn sm" id="rXls">تنزيل Excel</button></div>${matrixTable(g, S.aReport)}</div>
+  ${RO() ? "" : `<div id="aeBox"></div>`}
   <div class="card"><h2>شهادات الحضور</h2>
     <p class="muted" style="margin-top:0">يستحق الشهادة من حضوره ${th.certMin}% أو أكثر${needFee ? "، وسدّد رسومه كاملة" : ""}. كل شهادة عليها QR للتحقق منها.</p>
     ${docs.length ? `<div class="tbl"><table><thead><tr><th class="nm">الطالب</th><th>الحضور</th><th>الحالة</th><th></th></tr></thead><tbody>
@@ -3149,6 +3622,7 @@ function adminReport(el){
     : `<p class="muted" style="margin:0">ما فيه تحضير مسجل لهذا المقرر.</p>`}
   </div>`;
   bindCopy();
+  if (!RO()) attEditor(g);
   $("#rPdf").onclick = () => printGroupSheet(g, S.aReport);
   $("#rXls").onclick = () => excelGroupSheet(g, S.aReport);
   if ($("#cIssue")) $("#cIssue").onclick = async () => {
