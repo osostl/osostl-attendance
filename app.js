@@ -248,7 +248,7 @@ function renderAnn(){
 const trainerTitle = t => (t.gender === "f" ? "المدربة " : "المدرب ") + t.name;
 function renderTop(){
   const w = $("#topWho"), sub = $("#topSub");
-  const label = {trainer: "بوابة المدربين", admin: "بوابة الشؤون المالية والأكاديمية", student: "بوابة الطلاب", trainerLogin: "بوابة المدربين", adminLogin: "بوابة الشؤون المالية والأكاديمية", studentLogin: "بوابة الطلاب"}[S.view] || "بوابة الحضور والانصراف";
+  const label = {trainer: "بوابة المدربين", admin: "بوابة الشؤون المالية والأكاديمية", student: "بوابة الطلاب", trainerLogin: "بوابة المدربين", adminLogin: "بوابة الشؤون المالية والأكاديمية", studentLogin: "بوابة الطلاب"}[S.view] || "البوابة الإلكترونية";
   sub.textContent = label;
   if (S.authUser) {
     let who = "";
