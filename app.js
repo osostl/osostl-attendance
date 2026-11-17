@@ -1129,7 +1129,8 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
-  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية"]] : []),["archive","الأرشيف"],["logs","السجل"]];
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية"]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
+  if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
