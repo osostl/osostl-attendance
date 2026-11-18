@@ -3153,6 +3153,96 @@ function buildPlan(net, plan, start, months, second){
   }
   return [{due: start, amount: net}];
 }
+/* ---------- finance import from the prepared Excel (sheets: الطلاب + الدفعات) ---------- */
+const nameToks = s => norm(s).split(" ").filter(t => t && !["بن", "بنت"].includes(t));
+function guessStudent(name){
+  const A = nameToks(name); if (!A.length) return {num: "", cands: []};
+  const sc = Object.entries(S.students || {}).map(([num, st]) => { const B = nameToks(st.name); if (!B.length || A[0] !== B[0]) return [0, num]; const sb = new Set(B); return [A.filter(t => sb.has(t)).length + (B.length === 1 ? 0.5 : 0), num]; }).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0]);
+  const top = sc.filter(x => x[0] === (sc[0] || [0])[0]);
+  return {num: sc.length && sc[0][0] >= 1.5 && top.length === 1 ? sc[0][1] : "", cands: sc.slice(0, 6).map(x => x[1])};
+}
+async function finImportRead(f){
+  const out = $("#fiOut"); out.innerHTML = `<p class="muted">جاري قراءة الملف…</p>`;
+  let X; try { X = await loadXLSX(); } catch { out.innerHTML = ""; return toast("تعذّر تحميل أداة Excel، تأكد من الاتصال"); }
+  let wb; try { wb = X.read(await f.arrayBuffer(), {cellDates: false}); } catch { out.innerHTML = ""; return toast("ما قدرنا نقرأ الملف"); }
+  const sh = n => wb.Sheets[n] ? X.utils.sheet_to_json(wb.Sheets[n], {defval: ""}) : null;
+  const rows = sh("الطلاب"), prow = sh("الدفعات");
+  if (!rows || !prow) { out.innerHTML = ""; return toast("هذا مو ملف الاستيراد الجاهز. لازم يكون فيه ورقتين: الطلاب والدفعات"); }
+  const str = v => String(v == null ? "" : v).trim(), numv = v => Number(String(v).replace(/[^\d.]/g, "")) || 0;
+  const isoD = v => { if (typeof v === "number") { const d = new Date(Math.round((v - 25569) * 864e5)); return d.toISOString().slice(0, 10); } const t = str(v); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : ""; };
+  const list = rows.map((r, i) => {
+    const name = str(r["الاسم في الإكسل"]); if (!name) return null;
+    let num = digits(str(r["الرقم التدريبي"])); const g = guessStudent(name);
+    if (!num || !S.students[num]) num = g.num;
+    return {i, name, num, cands: g.cands, program: str(r["البرنامج"]), phone: str(r["الجوال"]), email: str(r["الإيميل"]).toLowerCase(), nid: digits(str(r["رقم الهوية"])), contract: str(r["رقم العقد"]), start: isoD(r["تاريخ البداية"]) || today(), total: numv(r["المبلغ الإجمالي"]), months: numv(r["عدد الأقساط"]) || 30, acc: str(r["حساب مالي؟"]) === "نعم", note: str(r["ملاحظات"]), excelNum: digits(str(r["الرقم التدريبي"]))};
+  }).filter(Boolean);
+  const pays = prow.map(r => ({excelNum: digits(str(r["الرقم التدريبي"])), name: str(r["الاسم في الإكسل"]), k: numv(r["رقم القسط"]), amount: numv(r["المبلغ"]), method: str(r["الطريقة"]) || "تحويل بنكي", date: isoD(r["التاريخ"]) || today()})).filter(p => p.amount > 0);
+  list.forEach(x => { x.pays = pays.filter(p => p.name === x.name && p.excelNum === x.excelNum); });
+  list.sort((a, b) => (a.num ? 1 : 0) - (b.num ? 1 : 0) || a.i - b.i);
+  S._fi = list; finImportDraw();
+}
+function finImportPlan(x){
+  const st = S.students[x.num]; if (!st) return null;
+  const prof = (S.stProf || {})[x.num] || {}, canProf = S.adminRole === "admin";
+  const ph = x.phone ? normPhone(x.phone) : "";
+  const pf = canProf ? Object.fromEntries([["phone", /^9665\d{8}$/.test(ph) ? ph : ""], ["email", /@/.test(x.email) ? x.email.slice(0, 120) : ""], ["nid", /^[12]\d{9}$/.test(x.nid) ? x.nid : ""]].filter(([k, v]) => v && !prof[k])) : {};
+  const hasAcc = !!(S.finAcc || {})[x.num], hasPays = paysOf(x.num).length > 0;
+  const newAcc = x.acc && x.total > 0 && !hasAcc, addPays = !hasPays && (newAcc || hasAcc) ? x.pays : [];
+  return {pf, newAcc, addPays, hasAcc, hasPays};
+}
+function finImportDraw(){
+  const out = $("#fiOut"); if (!out) return; const list = S._fi || [];
+  const opts = sel => `<option value="">— تخطي —</option>` + Object.entries(S.students).sort((a, b) => a[1].name.localeCompare(b[1].name, "ar")).map(([n, s]) => `<option value="${n}" ${n === sel ? "selected" : ""}>${esc(s.name)} · ${n}</option>`).join("");
+  let nAcc = 0, nPay = 0, sPay = 0, nProf = 0, nSkip = 0;
+  const rowsH = list.map((x, k) => {
+    const pl = x.num ? finImportPlan(x) : null;
+    if (!pl) nSkip++; else { nAcc += pl.newAcc ? 1 : 0; nPay += pl.addPays.length; sPay += pl.addPays.reduce((a, p) => a + p.amount, 0); nProf += Object.keys(pl.pf).length ? 1 : 0; }
+    const what = !pl ? `<span class="muted">ما ينضاف</span>` : [Object.keys(pl.pf).length ? `بيانات: ${Object.keys(pl.pf).map(k => ({phone: "جوال", email: "إيميل", nid: "هوية"})[k]).join("، ")}` : "", pl.newAcc ? `حساب ${SAR(x.total)} · ${x.months} قسط` : (x.acc && pl.hasAcc ? "عنده حساب" : ""), pl.addPays.length ? `${pl.addPays.length} دفعة · ${SAR(pl.addPays.reduce((a, p) => a + p.amount, 0))}` : (pl.hasPays && x.pays.length ? "عنده دفعات" : "")].filter(Boolean).join(" · ") || `<span class="muted">ما فيه شي جديد</span>`;
+    const sel = x.num && S.students[x.num] ? `<b>${esc(S.students[x.num].name)}</b> <span class="muted">${x.num}</span> <button class="btn sm" data-fich="${k}">تغيير</button>` : `<select data-fisel="${k}" style="max-width:240px">${opts("")}</select>`;
+    return `<tr><td class="nm">${esc(x.name)}${x.note ? `<div class="muted" style="font-size:12px;white-space:normal">${esc(x.note)}</div>` : ""}</td><td class="nm" style="white-space:normal">${sel}</td><td class="nm" style="white-space:normal">${what}</td></tr>`;
+  }).join("");
+  out.innerHTML = `<div class="stats" style="margin:12px 0"><div class="stat"><b>${list.length - nSkip}</b><span>طالب مربوط</span></div><div class="stat"><b>${nAcc}</b><span>حساب جديد</span></div><div class="stat"><b>${nPay}</b><span>دفعة · ${SAR(sPay)}</span></div><div class="stat"><b>${nProf}</b><span>ملف يتعبّى</span></div><div class="stat"><b>${nSkip}</b><span>غير مربوط</span></div></div>
+    ${S.adminRole !== "admin" ? `<div class="notice">الجوال والإيميل والهوية تنضاف من حساب الإدارة بس. من حسابك تنضاف الحسابات والدفعات.</div>` : ""}
+    <p class="muted">«غير مربوط» = ما لقيناه في البوابة. اختر اسمه من القائمة، أو خلّه «تخطي» إذا ما هو مسجل.</p>
+    <div class="tbl"><table><thead><tr><th class="nm">في الإكسل</th><th class="nm">في البوابة</th><th class="nm">وش بينضاف</th></tr></thead><tbody>${rowsH}</tbody></table></div>
+    <div class="row" style="margin-top:12px"><button class="btn pri" id="fiGo" ${nAcc + nPay + nProf ? "" : "disabled"}>اعتماد الاستيراد</button><span class="muted" id="fiLog"></span></div>`;
+  out.querySelectorAll("[data-fisel]").forEach(s => s.onchange = () => { list[Number(s.dataset.fisel)].num = s.value; finImportDraw(); });
+  out.querySelectorAll("[data-fich]").forEach(b => b.onclick = () => { list[Number(b.dataset.fich)].num = ""; finImportDraw(); });
+  $("#fiGo").onclick = finImportRun;
+}
+async function finImportRun(){
+  const list = (S._fi || []).filter(x => x.num), btn = $("#fiGo"), log = t => { const l = $("#fiLog"); if (l) l.textContent = t; };
+  const dup = {}; list.forEach(x => dup[x.num] = (dup[x.num] || 0) + 1);
+  const twice = Object.keys(dup).filter(n => dup[n] > 1); if (twice.length) return toast(`نفس الطالب مربوط بأكثر من صف: ${twice.map(n => S.students[n].name).join("، ")}`);
+  if (!btn.dataset.sure) { btn.dataset.sure = 1; btn.textContent = "متأكد؟ اضغط مرة ثانية"; return; }
+  btn.disabled = true;
+  const plans = list.map(x => ({x, pl: finImportPlan(x)})).filter(o => o.pl);
+  const progs = S.finSet.programs || [], progId = name => { const n = norm(name).replace(/^دبلوم ?/, ""); const p = progs.find(p => norm(p.name).includes(n) || n.includes(norm(p.name).replace(/^دبلوم ?/, ""))); return p ? p.id : ""; };
+  const allPays = []; plans.forEach(o => o.pl.addPays.forEach(p => allPays.push({o, p})));
+  try {
+    let base = 0;
+    if (allPays.length) { log("جاري حجز أرقام السندات…"); await runTransaction(db, async tx => { const c = await tx.get(ref("fin/counter")); base = (c.exists() && c.data().last) || 0; tx.set(ref("fin/counter"), {last: base + allPays.length}); }); }
+    const ops = [];
+    plans.forEach(({x, pl}) => {
+      const st = S.students[x.num];
+      if (Object.keys(pl.pf).length) ops.push(b => b.set(ref("studentSecrets/" + x.num), pl.pf, {merge: true}));
+      if (pl.newAcc) {
+        const months = Math.max(1, Math.min(60, Math.round(x.months))), plan = months === 1 ? "full" : months === 2 ? "half" : "monthly";
+        const acc = {num: x.num, name: st.name, program: progId(x.program), fee: x.total, discount: 0, discountNote: "", plan, start: x.start, months: plan === "monthly" ? months : 4, installments: buildPlan(x.total, plan, x.start, months, plan === "half" ? addMonths(x.start, 1) : ""), phone: "", contractNo: x.contract, note: x.note.slice(0, 600), imported: true, updatedAt: new Date().toISOString()};
+        ops.push(b => b.set(ref("finAccounts/" + x.num), acc));
+      }
+    });
+    const yr = today().slice(0, 4);
+    allPays.sort((a, b) => a.p.date.localeCompare(b.p.date) || a.p.k - b.p.k).forEach(({o, p}, i) => {
+      const id = "p-" + uid() + uid(), x = o.x;
+      const pay = {num: x.num, name: S.students[x.num].name, amount: p.amount, method: METHODS.includes(p.method) ? p.method : (/نقد|كاش/.test(p.method) ? "نقد" : "تحويل بنكي"), date: p.date, ref: x.contract, note: `مستورد من Excel · القسط ${p.k}`, program: progId(x.program), by: S.adminRole, void: false, imported: true, receiptNo: `${yr}-${String(base + i + 1).padStart(5, "0")}`, at: serverTimestamp()};
+      ops.push(b => b.set(ref("payments/" + id), pay));
+    });
+    for (let i = 0; i < ops.length; i += 400) { const b = writeBatch(db); ops.slice(i, i + 400).forEach(f => f(b)); log(`جاري الحفظ… ${Math.min(i + 400, ops.length)} من ${ops.length}`); await b.commit(); }
+    logAction("استيراد مالي من Excel", `${plans.filter(o => o.pl.newAcc).length} حساب · ${allPays.length} دفعة`);
+    toast("اكتمل الاستيراد"); S._fi = null; const out = $("#fiOut"); if (out) out.innerHTML = `<div class="notice ok">اكتمل الاستيراد: ${plans.filter(o => o.pl.newAcc).length} حساب جديد، و${allPays.length} دفعة. تقدر تراجعهم من «حسابات الطلاب».</div>`;
+  } catch (e) { btn.disabled = false; log(""); handleWriteErr(e); }
+}
 /* paid vs schedule: overdue = what fell due by today minus what was paid */
 function accStatus(acc, pays){
   const extras = acc.extras || [];
@@ -3411,6 +3501,10 @@ function finSettings(el){
     <div class="row" style="margin-top:8px"><select id="ptK" style="width:auto"><option value="fixed">مبلغ ثابت عن كل طالب</option><option value="percent">نسبة من المحصّل</option></select><input type="number" id="ptV" min="0" placeholder="المبلغ أو النسبة" style="width:150px"><button class="btn gold sm" id="ptAdd">+ إضافة شريك</button></div></div>`;
   el.insertAdjacentHTML("beforeend", sigCard("finance", "توقيع المالية", "يظهر على سندات القبض والصرف وكشوف الحساب والتقرير المالي."));
   bindSigCards(el);
+  el.insertAdjacentHTML("beforeend", `<div class="card"><h2>استيراد الحسابات والدفعات من Excel</h2>
+    <p class="muted" style="margin-top:0">ارفع ملف الاستيراد الجاهز. تطلع لك معاينة لكل طالب قبل ما ينحفظ أي شي. الاستيراد يعبّي الفاضي بس: ما يغيّر حساب موجود، وما يضيف دفعات لطالب عنده دفعات من قبل.</p>
+    <input type="file" id="fiF" accept=".xlsx,.xls"><div id="fiOut"></div></div>`);
+  $("#fiF").onchange = e => { const f = e.target.files[0]; if (f) finImportRead(f); };
   const saveKey = async (k, list, msg) => { try { await setDoc(ref("fin/settings"), {[k]: list}, {merge: true}); S.finSet[k] = list; logAction(msg, ""); toast("انحفظ"); render(); } catch (e) { handleWriteErr(e); } };
   $("#etAdd").onclick = () => { const name = $("#etN").value.trim(), fee = Number($("#etF").value); if (!name || !(fee > 0)) return toast("اكتب الاسم والمبلغ"); saveKey("extraTypes", [...(S.finSet.extraTypes || []), {name, fee}], "إضافة نوع رسوم: " + name); };
   el.querySelectorAll("[data-etdel]").forEach(b => b.onclick = () => { const l = clone(S.finSet.extraTypes || []); l.splice(Number(b.dataset.etdel), 1); saveKey("extraTypes", l, "حذف نوع رسوم"); });
