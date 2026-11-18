@@ -92,6 +92,7 @@ textarea{min-height:110px;resize:vertical}
 .seg button{border:0;background:#fff;padding:7px 11px;cursor:pointer;font-size:13.5px;font-weight:600;color:var(--muted)}
 .seg button+button{border-inline-start:1px solid var(--line)}
 .seg button.on.p{background:var(--ok);color:#fff}.seg button.on.l{background:#D9A400;color:#fff}.seg button.on.a{background:var(--abs);color:#fff}.seg button.on.e{background:var(--exc);color:#fff}
+.frSteps{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}.frSteps span{padding:6px 10px;border-radius:999px;background:var(--line);color:var(--muted);font-size:13px}.frSteps span.on{background:var(--ok);color:#fff}
 .idv{margin:10px 0 14px}.idv b{display:inline-grid;place-items:center;width:64px;height:64px;border-radius:50%;font-size:34px;color:#fff}.idv.ok b{background:var(--ok)}.idv.bad b{background:var(--abs)}.idv h2{margin:10px 0 4px;font-size:24px}.idv.ok h2{color:var(--ok)}.idv.bad h2{color:var(--abs)}.idv p{margin:0;color:var(--muted)}
 .idcBox svg{width:100%;height:auto;display:block;max-width:560px;margin:0 auto;border-radius:16px;box-shadow:0 6px 22px rgba(18,30,24,.14)}
 .idcFull{position:fixed;inset:0;z-index:60;background:#0f1a14;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:16px}.idcFull svg{width:min(96vw,150vh);height:auto;border-radius:18px}.idcFull .muted{color:#9fb0a6}
@@ -228,7 +229,7 @@ tr:nth-child(even) td{background:#FAFBFA}
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div class="box" id="modalBox"></div></div>
 <div class="toast" id="toast" role="status"></div>
 
-<script type="module" src="./app.js?v=50"></script>
+<script type="module" src="./app.js?v=51"></script>
 <script>
 (function(){
   var b = document.getElementById("themeBtn"), root = document.documentElement;

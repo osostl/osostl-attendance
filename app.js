@@ -165,6 +165,7 @@ function startData(){
     S.subs.push(onSnapshot(query(collection(db, "warnings"), where("num", "==", S.myNum)), snap => { S.myWarn = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(ref("finAccounts/" + S.myNum), snap => { S.myFin = snap.exists() ? snap.data() : null; if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "payments"), where("num", "==", S.myNum)), snap => { S.myPay = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
+    S.subs.push(onSnapshot(query(collection(db, "finReqs"), where("num", "==", S.myNum)), snap => { S.myFReq = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "idcards"), where("num", "==", S.myNum)), snap => { const t = snap.docs[0] ? snap.docs[0].id : null; if (t !== S.myIdTok) { S.myIdTok = t; if (S.sTab === "card" && !busyEditing()) render(); } }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "certs"), where("num", "==", S.myNum)), snap => { S.myCerts = snap.docs.map(d => d.data()).filter(c => !c.revoked); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "evals"), where("num", "==", S.myNum)), snap => { S.myEvals = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
@@ -698,7 +699,7 @@ const EXC_ST = {pending: "قيد المراجعة", accepted: "مقبول", reje
 const EXC_PILL = {pending: "l", accepted: "p", rejected: "a"};
 function studentTabs(){
   const open = Object.values(S.groups).filter(g => g.evalOpen && !(S.myEvals || []).some(e => e.groupId === g.id)).length;
-  const tabs = [["home", "الرئيسية"], ["card", "بطاقتي"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ...(S.myFin ? [["fin", "المالية"]] : []), ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
+  const tabs = [["home", "الرئيسية"], ["card", "بطاقتي"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ["freq", "طلبات المالية" + ((S.myFReq || []).some(r => r.type === "invoice" && r.status === "approved" && !r.seen) ? " (1)" : "")], ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
   return `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${(S.sTab || "home") === k ? "on" : ""}" data-stab="${k}">${v}</button>`).join("")}</div></div>`;
 }
 function bindStudentTabs(app){ app.querySelectorAll("[data-stab]").forEach(b => b.onclick = () => { S.sTab = b.dataset.stab; render(); window.scrollTo(0, 0); }); }
@@ -712,7 +713,7 @@ function myCourseStats(){
 function renderStudent(app){
   const st = S.myStudent;
   if (!st) { app.innerHTML = `<div class="notice err">ما لقينا سجلك. تواصل مع الشؤون الأكاديمية.</div>`; return; }
-  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({card: studentCard, att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFin, survey: studentSurvey})[S.sTab]($("#sb")); return; }
+  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({card: studentCard, att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFinReq, freq: studentFinReq, survey: studentSurvey})[S.sTab]($("#sb")); return; }
   const gs = Object.values(S.groups).sort((a,b) => (a.course||"").localeCompare(b.course||"","ar"));
   const res = {}; S.myResults.forEach(r => res[r.groupId] = r);
   const cards = gs.map(g => {
@@ -1522,7 +1523,7 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
-  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية"]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
@@ -3143,7 +3144,10 @@ function startFinance(){
   S.subs.push(onSnapshot(collection(db, "expenses"), snap => { S.exps = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
   S.subs.push(onSnapshot(collection(db, "commPays"), snap => { S.commPays = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
   S.subs.push(onSnapshot(collection(db, "salaryPays"), snap => { S.salPays = {}; snap.docs.forEach(d => S.salPays[d.id] = d.data()); afterData(); }, () => {}));
+  S.subs.push(onSnapshot(collection(db, "finReqs"), snap => { S.fReqs = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
 }
+/* what is waiting on the person looking: finance signs and approves, the director stamps */
+const fReqWaiting = () => (S.fReqs || []).filter(r => r.type === "inquiry" ? (r.status === "new" && FIN()) : (S.adminRole === "admin" ? ["new", "fin_signed", "stamped"].includes(r.status) : ["new", "stamped"].includes(r.status))).length + (S.adminRole === "admin" ? (S.fReqs || []).filter(r => r.type === "inquiry" && r.status === "new").length : 0);
 function buildPlan(net, plan, start, months, second){
   if (!net || !start) return [];
   if (plan === "half") { const a = Math.round(net / 2 * 100) / 100; return [{due: start, amount: a}, {due: second || addMonths(start, 2), amount: Math.round((net - a) * 100) / 100}]; }
@@ -3243,6 +3247,91 @@ async function finImportRun(){
     toast("اكتمل الاستيراد"); S._fi = null; const out = $("#fiOut"); if (out) out.innerHTML = `<div class="notice ok">اكتمل الاستيراد: ${plans.filter(o => o.pl.newAcc).length} حساب جديد، و${allPays.length} دفعة. تقدر تراجعهم من «حسابات الطلاب».</div>`;
   } catch (e) { btn.disabled = false; log(""); handleWriteErr(e); }
 }
+/* ---------- student finance requests: final invoice (finance signs → director stamps → finance approves) and inquiries ---------- */
+const FR_ST = {new: "طلب جديد", fin_signed: "وقّعتها المالية · بانتظار ختم الإدارة", stamped: "مختومة · بانتظار اعتماد المالية", approved: "معتمدة وظاهرة للطالب", rejected: "مرفوضة", done: "تم التواصل"};
+function invoiceHTML(inv){
+  return `<h1>الفاتورة النهائية</h1>
+  <div class="info"><div><b>رقم الفاتورة:</b> ${esc(inv.no)}</div><div><b>التاريخ:</b> ${esc(bothDates(inv.date))}</div></div>
+  <table><tbody>
+    <tr><td class="n" style="width:30%"><b>المتدرب</b></td><td class="n">${esc(inv.name)} · الرقم التدريبي ${esc(inv.num)}</td></tr>
+    <tr><td class="n"><b>البرنامج</b></td><td class="n">${esc(inv.program || "البرنامج التدريبي")}</td></tr>
+    <tr><td class="n"><b>إجمالي الرسوم</b></td><td class="n">${SAR(inv.net)}${inv.discount ? ` <span style="color:#666;font-size:11px">(بعد خصم ${SAR(inv.discount)})</span>` : ""}</td></tr>
+    <tr><td class="n"><b>المبلغ المسدَّد</b></td><td class="n"><b>${SAR(inv.paid)}</b></td></tr>
+    <tr><td class="n"><b>المتبقي</b></td><td class="n"><b>${SAR(0)}</b> · مسدّد بالكامل</td></tr>
+  </tbody></table>
+  <h3 style="color:#1F5136">الدفعات</h3><table><thead><tr><th>السند</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th></tr></thead><tbody>${(inv.pays || []).map(p => `<tr><td>${esc(p.receiptNo)}</td><td>${dH(p.date)}</td><td>${SAR(p.amount)}</td><td>${esc(p.method)}</td></tr>`).join("")}</tbody></table>
+  <p style="font-size:11px;color:#444;margin-top:10px">نفيد بأن ${esc(inv.name)} سدّد كامل رسوم البرنامج الموضّح أعلاه، ولا توجد عليه مستحقات مالية للمعهد حتى تاريخه. وهذه الفاتورة ليست فاتورة ضريبية.</p>
+  <div class="sig"><div>${okImg(inv.finSig) ? `<img class="sgi" src="${inv.finSig}" alt="">` : ""}المالية</div><div>${okImg(inv.stamp) ? `<img class="stp" src="${inv.stamp}" alt="">` : ""}الختم</div></div>`;
+}
+const printInvoice = inv => { const w = openPrint(); if (w) fillPrintFin(w, `الفاتورة النهائية ${inv.no}`, [{html: invoiceHTML(inv)}]); };
+function studentFinReq(el){
+  const reqs = (S.myFReq || []).slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const inv = reqs.find(r => r.type === "invoice" && r.status !== "rejected"), rej = reqs.find(r => r.type === "invoice" && r.status === "rejected");
+  const st = S.myFin ? accStatus(S.myFin, S.myPay || []) : null, full = st && st.net > 0 && st.remaining <= 0.01;
+  const steps = ["طلبك", "توقيع المالية", "ختم الإدارة", "الاعتماد"], at = inv ? ({new: 1, fin_signed: 2, stamped: 3, approved: 4})[inv.status] || 1 : 0;
+  const invBox = inv && inv.status === "approved" ? `<div class="notice" style="margin:0 0 10px">فاتورتك النهائية جاهزة ✓</div><button class="btn pri" id="frPrint">عرض وطباعة الفاتورة</button>`
+    : inv ? `<div class="frSteps">${steps.map((t, k) => `<span class="${k < at ? "on" : ""}">${k < at ? "✓ " : ""}${t}</span>`).join("")}</div><p class="muted" style="margin-bottom:0">طلبك تحت الإجراء. توصلك هنا أول ما تنعتمد.</p>`
+    : full ? `${rej ? `<div class="notice err" style="margin:0 0 10px">طلبك السابق انرفض${rej.reason ? ": " + esc(rej.reason) : ""}</div>` : ""}<p style="margin-top:0">سدّدت كامل الرسوم ✓ تقدر تطلب فاتورتك النهائية الموقّعة والمختومة.</p><button class="btn pri" id="frInv">طلب الفاتورة النهائية</button>`
+    : `<p class="muted" style="margin:0">زر طلب الفاتورة النهائية يظهر لك بعد سداد كامل الرسوم.</p>`;
+  const inq = reqs.filter(r => r.type === "inquiry");
+  el.innerHTML = `<div class="card"><h2>الفاتورة النهائية</h2>${invBox}</div>
+  <div class="card"><h2>استفسار مالي</h2><p class="muted" style="margin-top:0">اكتب استفسارك، ومسؤول المالية يتواصل معك على الواتساب.</p>
+    <label for="frT">استفسارك</label><textarea id="frT" rows="3" maxlength="800" placeholder="مثال: أبي أعرف موعد القسط الجاي"></textarea>
+    <label for="frP">جوالك للتواصل</label><input type="tel" id="frP" dir="ltr" placeholder="05xxxxxxxx" inputmode="numeric">
+    <div class="row" style="margin-top:10px"><button class="btn pri" id="frSend">إرسال للمالية</button></div>
+    ${inq.length ? `<h3>استفساراتك</h3><div class="list">${inq.map(r => `<div class="item"><div class="grow"><div>${esc(r.text)}</div><div class="muted">${esc(bothDates((r.at || "").slice(0, 10)))}</div></div><span class="pill">${r.status === "done" ? "تم التواصل" : "قيد المراجعة"}</span></div>`).join("")}</div>` : ""}</div>`;
+  const add = async d => { const id = "fr-" + uid() + uid(); await setDoc(ref("finReqs/" + id), {num: S.myNum, name: (S.myStudent && S.myStudent.name) || "", status: "new", at: new Date().toISOString(), ...d}); };
+  if ($("#frPrint")) { $("#frPrint").onclick = () => printInvoice(inv.inv); if (!inv.seen) setDoc(ref("finReqs/" + inv.id), {seen: true}, {merge: true}).catch(() => {}); }
+  if ($("#frInv")) $("#frInv").onclick = async e => { e.target.disabled = true; try { await add({type: "invoice"}); toast("انرسل طلبك للمالية"); } catch (x) { e.target.disabled = false; handleWriteErr(x); } };
+  $("#frSend").onclick = async e => {
+    const text = $("#frT").value.trim(), ph = normPhone($("#frP").value);
+    if (text.length < 3) return toast("اكتب استفسارك"); if (!/^9665\d{8}$/.test(ph)) return toast("اكتب رقم جوال صحيح");
+    e.target.disabled = true; try { await add({type: "inquiry", text: text.slice(0, 800), phone: ph}); toast("انرسل استفسارك"); } catch (x) { e.target.disabled = false; handleWriteErr(x); }
+  };
+}
+function finReqTab(el){
+  const all = (S.fReqs || []).slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const invs = all.filter(r => r.type === "invoice"), inq = all.filter(r => r.type === "inquiry");
+  const isDir = S.adminRole === "admin", isFin = FIN() || isDir;
+  const act = r => {
+    const b = [];
+    if (r.status === "new" && isFin) b.push(`<button class="btn sm pri" data-frsign="${r.id}">توقيع ورفع للإدارة</button>`, `<button class="btn sm danger" data-frrej="${r.id}">رفض</button>`);
+    if (r.status === "fin_signed") b.push(isDir ? `<button class="btn sm pri" data-frstamp="${r.id}">ختم وإرجاع للمالية</button>` : `<span class="muted">بانتظار ختم الإدارة</span>`);
+    if (r.status === "stamped" && isFin) b.push(`<button class="btn sm pri" data-frok="${r.id}">اعتماد وإظهار للطالب</button>`);
+    if (r.status === "approved") b.push(`<button class="btn sm" data-frview="${r.id}">الفاتورة</button>`);
+    return b.join("");
+  };
+  const stOf = r => { const acc = (S.finAcc || {})[r.num]; return acc ? accStatus(acc, paysOf(r.num)) : null; };
+  el.innerHTML = `<div class="card"><h2>طلبات الفاتورة النهائية</h2><p class="muted" style="margin-top:0">المالية توقّع وترفع للإدارة، والإدارة تختم وترجعها، وبعدها المالية تعتمدها وتظهر للطالب.</p>
+    <div class="list">${invs.map(r => { const st = stOf(r); return `<div class="item"><div class="grow"><b>${esc(r.name)}</b> <span class="muted">${esc(r.num)}</span><div class="muted">${esc(bothDates((r.at || "").slice(0, 10)))} · ${FR_ST[r.status] || r.status}${r.status === "rejected" && r.reason ? " · " + esc(r.reason) : ""}${st && st.remaining > 0.01 && r.status !== "approved" ? ` · <span style="color:var(--abs)">عليه متبقي ${SAR(st.remaining)}</span>` : ""}</div></div>${act(r)}</div>`; }).join("") || `<span class="muted">ما فيه طلبات.</span>`}</div></div>
+  <div class="card"><h2>الاستفسارات</h2><div class="list">${inq.map(r => `<div class="item" style="${r.status === "done" ? "opacity:.6" : ""}"><div class="grow"><b>${esc(r.name)}</b> <span class="muted">${esc(r.num)} · ${esc(bothDates((r.at || "").slice(0, 10)))}</span><div>${esc(r.text)}</div></div><a class="btn sm" style="text-decoration:none" target="_blank" rel="noopener" href="https://wa.me/${esc(r.phone)}?text=${encodeURIComponent(`السلام عليكم ${r.name}، بخصوص استفسارك للمالية في ${INST_AR}:\n`)}">واتساب</a>${r.status !== "done" && isFin ? `<button class="btn sm" data-frdone="${r.id}">تم التواصل</button>` : ""}</div>`).join("") || `<span class="muted">ما فيه استفسارات.</span>`}</div></div>`;
+  const upd = async (id, d, msg, log) => { try { await setDoc(ref("finReqs/" + id), {...d, [`${d.status || "x"}At`]: new Date().toISOString(), [`${d.status || "x"}By`]: S.adminRole}, {merge: true}); logAction(log, (all.find(r => r.id === id) || {}).name || ""); toast(msg); } catch (e) { handleWriteErr(e); } };
+  el.querySelectorAll("[data-frsign]").forEach(b => b.onclick = () => {
+    const r = all.find(x => x.id === b.dataset.frsign), st = stOf(r);
+    if (!st || st.remaining > 0.01) return toast(st ? `ما سدّد كامل الرسوم، باقي ${SAR(st.remaining)}` : "ما له حساب مالي");
+    if (!okImg((S.sigs || {}).finance)) return toast("ارفع توقيع المالية أول من «الإعدادات»");
+    upd(r.id, {status: "fin_signed", finSig: S.sigs.finance}, "انرفعت للإدارة للختم", "توقيع فاتورة نهائية");
+  });
+  el.querySelectorAll("[data-frstamp]").forEach(b => b.onclick = () => { if (!okImg(S.stamp)) return toast("ارفع الختم أول من تبويب «النظام»"); upd(b.dataset.frstamp, {status: "stamped", stamp: S.stamp}, "انختمت ورجعت للمالية", "ختم فاتورة نهائية"); });
+  el.querySelectorAll("[data-frrej]").forEach(b => b.onclick = () => { const reason = prompt("سبب الرفض (يظهر للطالب):"); if (reason === null) return; upd(b.dataset.frrej, {status: "rejected", reason: reason.trim().slice(0, 200)}, "انرفض الطلب", "رفض طلب فاتورة"); });
+  el.querySelectorAll("[data-frdone]").forEach(b => b.onclick = () => upd(b.dataset.frdone, {status: "done"}, "تم", "رد على استفسار مالي"));
+  el.querySelectorAll("[data-frview]").forEach(b => b.onclick = () => printInvoice(all.find(x => x.id === b.dataset.frview).inv));
+  el.querySelectorAll("[data-frok]").forEach(b => b.onclick = async () => {
+    const r = all.find(x => x.id === b.dataset.frok), acc = (S.finAcc || {})[r.num], st = stOf(r);
+    if (!st || st.remaining > 0.01) return toast("ما سدّد كامل الرسوم");
+    const prog = ((S.finSet && S.finSet.programs) || []).find(x => x.id === acc.program);
+    const pays = paysOf(r.num).filter(p => !p.void).sort((a, c) => (a.date || "").localeCompare(c.date || "") || (a.receiptNo || "").localeCompare(c.receiptNo || "")).map(p => ({receiptNo: p.receiptNo || "", date: p.date || "", amount: Number(p.amount) || 0, method: p.method || ""}));
+    b.disabled = true;
+    try {
+      await runTransaction(db, async tx => {
+        const c = await tx.get(ref("fin/invCounter")), n = ((c.exists() && c.data().last) || 0) + 1;
+        const inv = {no: `F-${today().slice(0, 4)}-${String(n).padStart(4, "0")}`, date: today(), name: r.name || (S.students[r.num] || {}).name || "", num: r.num, program: prog ? prog.name : "", net: st.net, paid: st.paid, discount: Number(acc.discount) || 0, pays, finSig: r.finSig || "", stamp: r.stamp || ""};
+        tx.set(ref("fin/invCounter"), {last: n}); tx.set(ref("finReqs/" + r.id), {status: "approved", inv, approvedAt: new Date().toISOString(), approvedBy: S.adminRole}, {merge: true});
+      });
+      logAction("اعتماد فاتورة نهائية", r.name || r.num); toast("انعتمدت وظهرت للطالب");
+    } catch (e) { b.disabled = false; handleWriteErr(e); }
+  });
+}
 /* paid vs schedule: overdue = what fell due by today minus what was paid */
 function accStatus(acc, pays){
   const extras = acc.extras || [];
@@ -3264,11 +3353,12 @@ const paysOf = num => (S.pays || []).filter(p => p.num === num);
 
 function adminFinance(el){
   const t = S.finTab || "sum";
-  const tabs = [["sum", "الملخص"], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"]] : []), ["set", "الإعدادات"]];
+  const nW = fReqWaiting();
+  const tabs = [["sum", "الملخص"], ["req", "طلبات الطلاب" + (nW ? ` (${nW})` : "")], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"]] : []), ["set", "الإعدادات"]];
   el.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${t === k ? "on" : ""}" data-ft="${k}">${v}</button>`).join("")}</div></div><div id="fb"></div>`;
   el.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { S.finTab = b.dataset.ft; render(); });
   if (!S.finSet) { $("#fb").innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
-  ({sum: finSummary, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, set: finSettings})[t]($("#fb"));
+  ({sum: finSummary, req: finReqTab, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, set: finSettings})[t]($("#fb"));
 }
 function finRows(){
   return Object.values(S.students).map(s => { const acc = (S.finAcc || {})[s.num]; return {s, acc, st: acc ? accStatus(acc, paysOf(s.num)) : {net: 0, paid: 0, remaining: 0, overdue: 0, status: "none"}}; });
