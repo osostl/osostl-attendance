@@ -119,6 +119,7 @@ if (!configured) {
   onSnapshot(ref("public/stats"), snap => { S.stats = snap.exists() ? snap.data() : null; if (!S.authUser && S.view === "home") render(); }, () => {});
   onSnapshot(ref("public/survey"), snap => { S.survey = snap.exists() ? snap.data() : null; if (S.role === "student" && !busyEditing()) render(); }, () => {});
   S.policy = new URLSearchParams(location.search).has("policy");
+  S.idv = (new URLSearchParams(location.search).get("id") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 24) || null;
   S.verify = (new URLSearchParams(location.search).get("verify") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 20) || null;
   onSnapshot(ref("public/system"), snap => { S.sys = snap.exists() ? snap.data() : {}; render(); }, () => { S.sys = {}; render(); });
   onSnapshot(ref("ann/all"), snap => { S.ann.all = (snap.exists() && snap.data().items) || []; renderAnn(); }, () => {});
@@ -164,6 +165,7 @@ function startData(){
     S.subs.push(onSnapshot(query(collection(db, "warnings"), where("num", "==", S.myNum)), snap => { S.myWarn = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(ref("finAccounts/" + S.myNum), snap => { S.myFin = snap.exists() ? snap.data() : null; if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "payments"), where("num", "==", S.myNum)), snap => { S.myPay = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
+    S.subs.push(onSnapshot(query(collection(db, "idcards"), where("num", "==", S.myNum)), snap => { const t = snap.docs[0] ? snap.docs[0].id : null; if (t !== S.myIdTok) { S.myIdTok = t; if (S.sTab === "card" && !busyEditing()) render(); } }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "certs"), where("num", "==", S.myNum)), snap => { S.myCerts = snap.docs.map(d => d.data()).filter(c => !c.revoked); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "evals"), where("num", "==", S.myNum)), snap => { S.myEvals = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
     return;
@@ -188,6 +190,7 @@ function startData(){
       return;
     }
     S.subs.push(onSnapshot(collection(db, "certs"), snap => { S.certs = {}; snap.docs.forEach(d => { const c = d.data(); S.certs[c.key] = c; }); afterData(); }, () => {}));
+    S.subs.push(onSnapshot(collection(db, "idcards"), snap => { S.idTok = {}; S.idDocs = {}; snap.docs.forEach(d => { const v = d.data(); S.idDocs[d.id] = v; if (v.num) S.idTok[v.num] = d.id; }); S.idLoaded = true; afterData(); }, () => {}));
     S.subs.push(onSnapshot(collection(db, "excuses"), snap => { S.excuses = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     S.subs.push(onSnapshot(collection(db, "warnings"), snap => { S.warnings = {}; snap.docs.forEach(d => S.warnings[d.id] = d.data()); afterData(); }, () => {}));
     S.subs.push(onSnapshot(collection(db, "secrets"), snap => { S.secrets = {}; S.trPhones = {}; snap.docs.forEach(d => { S.secrets[d.id] = d.data().code; if (d.data().phone) S.trPhones[d.id] = d.data().phone; }); afterData(); }, () => {}));
@@ -203,7 +206,7 @@ function afterData(){
   if (S._loginLog && S.loaded.trainers) { S._loginLog = false; logAction("تسجيل دخول", ""); }
   if (S.role === "admin") syncTrainerNumbers();
   if (SEES_FIN()) syncFinClear();
-  if (S.role === "admin" && !RO() && !FIN()) syncPublicStats();
+  if (S.role === "admin" && !RO() && !FIN()) { syncPublicStats(); syncIdCards(); }
   if (S.view === "trainer" && S.tGroup && !S.groups[S.tGroup]) { S.tGroup = null; stopAtt(); }
   if (S.view === "admin" && $("#modal").classList.contains("on") && S._modalGroup) renderModalStudents();
   if (busyEditing()) return;
@@ -317,6 +320,7 @@ function render(){
   if (!configured) return;
   renderTop(); renderFab();
   const app = $("#app");
+  if (S.idv) { $("#topSub").textContent = "التحقق من بطاقة المتدرب"; return renderIdVerify(app); }
   if (S.verify) { $("#topSub").textContent = "التحقق من الشهادات"; return renderVerify(app); }
   if (S.policy) return renderPolicy(app);
   if (!S.authReady || !S.sys) { app.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
@@ -694,7 +698,7 @@ const EXC_ST = {pending: "قيد المراجعة", accepted: "مقبول", reje
 const EXC_PILL = {pending: "l", accepted: "p", rejected: "a"};
 function studentTabs(){
   const open = Object.values(S.groups).filter(g => g.evalOpen && !(S.myEvals || []).some(e => e.groupId === g.id)).length;
-  const tabs = [["home", "الرئيسية"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ...(S.myFin ? [["fin", "المالية"]] : []), ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
+  const tabs = [["home", "الرئيسية"], ["card", "بطاقتي"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ...(S.myFin ? [["fin", "المالية"]] : []), ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
   return `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${(S.sTab || "home") === k ? "on" : ""}" data-stab="${k}">${v}</button>`).join("")}</div></div>`;
 }
 function bindStudentTabs(app){ app.querySelectorAll("[data-stab]").forEach(b => b.onclick = () => { S.sTab = b.dataset.stab; render(); window.scrollTo(0, 0); }); }
@@ -708,7 +712,7 @@ function myCourseStats(){
 function renderStudent(app){
   const st = S.myStudent;
   if (!st) { app.innerHTML = `<div class="notice err">ما لقينا سجلك. تواصل مع الشؤون الأكاديمية.</div>`; return; }
-  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFin, survey: studentSurvey})[S.sTab]($("#sb")); return; }
+  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({card: studentCard, att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFin, survey: studentSurvey})[S.sTab]($("#sb")); return; }
   const gs = Object.values(S.groups).sort((a,b) => (a.course||"").localeCompare(b.course||"","ar"));
   const res = {}; S.myResults.forEach(r => res[r.groupId] = r);
   const cards = gs.map(g => {
@@ -754,7 +758,7 @@ function renderStudent(app){
       </div>`).join("") || `<div class="empty">ما فيه مقررات مسجلة لك بعد.</div>`}</div>
   </div>
   <div class="card"><h2>جدولي الأسبوعي</h2>${weekTable(rows)}</div>
-  ${(S.myCerts || []).length ? `<div class="card"><h2>شهاداتي</h2><div class="list">${S.myCerts.map(c => `<div class="item"><div class="grow"><div class="t">${esc(c.course)}</div><div class="muted">حضور ${c.attPct}% · ${esc(greg(c.date))}</div></div><button class="btn sm gold" data-cert="${esc(c.code)}">طباعة الشهادة</button></div>`).join("")}</div></div>` : ""}`;
+  ${(S.myCerts || []).length ? `<div class="card"><h2>شهاداتي</h2><div class="list">${S.myCerts.map(c => `<div class="item"><div class="grow"><div class="t">${esc(c.course)}</div><div class="muted">${c.kind === "course" ? `دورة${c.hours ? " · " + esc(c.hours) + " ساعة" : ""}` : `حضور ${c.attPct}%`} · ${esc(greg(c.date))}</div></div><button class="btn sm gold" data-cert="${esc(c.code)}">طباعة الشهادة</button></div>`).join("")}</div></div>` : ""}`;
   app.querySelectorAll("[data-cert]").forEach(b => b.onclick = () => { const c = S.myCerts.find(x => x.code === b.dataset.cert); if (c) printCerts([c]); });
   app.querySelector(".card").insertAdjacentHTML("afterend", studentTabs()); bindStudentTabs(app);
   app.querySelectorAll("[data-join]").forEach(b => b.onclick = () => {
@@ -2623,11 +2627,10 @@ async function printIdCards(nums){
   nums = nums.filter(n => S.students[n]); if (!nums.length) return toast("ما فيه متدربين");
   const w = openPrint(); if (!w) return;
   let qrcode = null; try { qrcode = await loadQR(); } catch {}
-  const hy = (() => { try { return Number(new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", {year: "numeric"}).format(new Date(today() + "T12:00:00")).replace(/\D/g, "")); } catch { return 0; } })();
-  const yr = hy ? `العام التدريبي ${hy}-${hy + 1} هـ` : "";
+  const yr = hijriYearLabel();
   const card = num => {
     const st = S.students[num];
-    let svg = ""; if (qrcode) { const q = qrcode(0, "M"); q.addData(`OSOS:${num}`); q.make(); svg = q.createSvgTag({cellSize: 2, margin: 0}); }
+    let svg = ""; if (qrcode) { const q = qrcode(0, "M"); const t = (S.idTok || {})[num]; q.addData(t ? idVerifyUrl(t) : `OSOS:${num}`); q.make(); svg = q.createSvgTag({cellSize: 1, margin: 0}); }
     return `<div class="idc"><div class="top"><img src="${SITE()}logo-mark.png" alt=""><div><b>${esc(INST_AR)}</b><span>${esc(INST_EN)}</span></div></div>
       <div class="body"><div class="ph">${st.gender === "f" ? ID_F : ID_M}</div><div class="inf"><span class="tag">بطاقة ${st.gender === "f" ? "متدربة" : "متدرب"}</span><span class="nm">${esc(st.name)}</span><span class="no">الرقم التدريبي <b>${esc(num)}</b></span>${yr ? `<span class="yr">${esc(yr)}</span>` : ""}</div><div class="qr">${svg}</div><img class="wm" src="${SITE()}logo-mark.png" alt=""></div>
       <div class="strip"></div></div>`;
@@ -2635,6 +2638,59 @@ async function printIdCards(nums){
   const pages = []; for (let i = 0; i < nums.length; i += 8) pages.push({cls: "cards", noHead: true, noFoot: true, html: `<div class="cardsGrid">${nums.slice(i, i + 8).map(card).join("")}</div>`});
   fillPrint(w, nums.length === 1 ? `بطاقة ${S.students[nums[0]].name}` : `بطاقات المتدربين (${nums.length})`, pages);
   logAction("طباعة بطاقات المتدربين", `${nums.length}`);
+}
+
+/* ---------- digital trainee ID card (student portal) ---------- */
+const hijriYearLabel = () => { try { const hy = Number(new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", {year: "numeric"}).format(new Date(today() + "T12:00:00")).replace(/\D/g, "")); return hy ? `العام التدريبي ${hy}-${hy + 1} هـ` : ""; } catch { return ""; } };
+let _logoData = null;
+async function logoDataURL(){
+  if (_logoData) return _logoData;
+  try { const b = await (await fetch(SITE() + "logo-mark.png")).blob(); _logoData = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); }); } catch { _logoData = ""; }
+  return _logoData;
+}
+async function idCardSVG(st, tok){
+  const num = st.num, logo = await logoDataURL();
+  let qr = ""; if (tok) try { const qrcode = await loadQR(); const q = qrcode(0, "M"); q.addData(idVerifyUrl(tok)); q.make(); const n = q.getModuleCount(), cs = 190 / n; let d = "";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += `M${(c * cs).toFixed(2)} ${(r * cs).toFixed(2)}h${cs.toFixed(2)}v${cs.toFixed(2)}h-${cs.toFixed(2)}z`;
+    qr = `<g transform="translate(34 172)"><rect x="-8" y="-8" width="206" height="206" rx="10" fill="#fff"/><path d="${d}" fill="#1d2621"/></g>`; } catch {}
+  const sil = (st.gender === "f" ? ID_F : ID_M).replace("<svg ", `<svg x="658" y="168" width="164" height="196" preserveAspectRatio="xMidYMid slice" `);
+  const nm = st.name || "", fs = nm.length > 26 ? 26 : nm.length > 18 ? 31 : 36, F = `font-family="Tahoma, 'Segoe UI', Arial, sans-serif"`, yr = hijriYearLabel();
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 856 540" width="856" height="540" role="img" aria-label="بطاقة ${esc(nm)}">
+  <defs><clipPath id="idcc"><rect width="856" height="540" rx="30"/></clipPath><linearGradient id="idcg" x1="0" x2="1"><stop offset="0" stop-color="#C9A54C"/><stop offset=".5" stop-color="#E3C77C"/><stop offset="1" stop-color="#C9A54C"/></linearGradient><clipPath id="idcp"><rect x="658" y="168" width="164" height="196" rx="14"/></clipPath></defs>
+  <g clip-path="url(#idcc)"><rect width="856" height="540" fill="#fff"/>
+  ${logo ? `<image href="${logo}" x="318" y="190" width="220" height="220" opacity=".06"/>` : ""}
+  <rect width="856" height="132" fill="#1F5136"/>
+  <rect x="728" y="20" width="96" height="92" rx="16" fill="#fff"/>${logo ? `<image href="${logo}" x="734" y="26" width="84" height="80"/>` : ""}
+  <text x="706" y="64" direction="rtl" text-anchor="start" ${F} font-size="29" font-weight="700" fill="#fff">${esc(INST_AR)}</text>
+  <text x="706" y="98" direction="ltr" text-anchor="end" ${F} font-size="17" fill="#E3C77C">${esc(INST_EN)}</text>
+  <g clip-path="url(#idcp)">${sil}</g><rect x="658" y="168" width="164" height="196" rx="14" fill="none" stroke="#E3C77C" stroke-width="3"/>
+  <text x="626" y="200" direction="rtl" text-anchor="start" ${F} font-size="23" font-weight="700" fill="#8a6d22">بطاقة ${st.gender === "f" ? "متدربة" : "متدرب"}</text>
+  <text x="626" y="250" direction="rtl" text-anchor="start" ${F} font-size="${fs}" font-weight="700" fill="#1F5136">${esc(nm)}</text>
+  <text x="626" y="300" direction="rtl" text-anchor="start" ${F} font-size="21" fill="#555">الرقم التدريبي</text>
+  <text x="626" y="350" direction="ltr" text-anchor="end" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="42" font-weight="700" letter-spacing="3" fill="#1d2621">${esc(num)}</text>
+  ${yr ? `<text x="626" y="398" direction="rtl" text-anchor="start" ${F} font-size="20" fill="#777">${esc(yr)}</text>` : ""}
+  ${qr}
+  <text x="428" y="478" text-anchor="middle" ${F} font-size="17" fill="#8a9a90">${tok ? "امسح الباركود للتحقق من صلاحية البطاقة" : "بطاقة إلكترونية · تُبرز عند الطلب"}</text>
+  <rect y="516" width="856" height="24" fill="url(#idcg)"/></g>
+  <rect x="1" y="1" width="854" height="538" rx="29" fill="none" stroke="#c9d2cc" stroke-width="2"/></svg>`;
+}
+async function studentCard(el){
+  const st = {...S.myStudent, num: S.myStudent.num || S.myNum};
+  el.innerHTML = `<div class="card"><h2>بطاقتي</h2><p class="muted" style="margin-top:0">بطاقتك التدريبية الإلكترونية. أبرزها من جوالك عند الطلب، أو احفظها صورة.</p><div id="idcBox" class="idcBox"><div class="empty">جاري تجهيز البطاقة…</div></div>
+    <div class="row" style="margin-top:12px"><button class="btn pri" id="idcSave">حفظ البطاقة صورة</button><button class="btn" id="idcFull">عرض بملء الشاشة</button></div></div>`;
+  const svg = await idCardSVG(st, S.myIdTok); const box = $("#idcBox"); if (!box) return; box.innerHTML = svg;
+  $("#idcFull").onclick = () => { const o = document.createElement("div"); o.className = "idcFull"; o.innerHTML = svg + `<span class="muted">اضغط في أي مكان للإغلاق</span>`; o.onclick = () => o.remove(); document.body.appendChild(o); try { o.requestFullscreen && o.requestFullscreen().catch(() => {}); } catch {} };
+  $("#idcSave").onclick = async () => {
+    try {
+      const img = new Image(); const url = URL.createObjectURL(new Blob([svg], {type: "image/svg+xml"}));
+      await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = url; });
+      const c = document.createElement("canvas"); c.width = 1712; c.height = 1080; const x = c.getContext("2d"); x.drawImage(img, 0, 0, 1712, 1080); URL.revokeObjectURL(url);
+      const blob = await new Promise(ok => c.toBlob(ok, "image/png")); const name = `بطاقة-${st.num}.png`;
+      const file = new File([blob], name, {type: "image/png"});
+      if (navigator.canShare && navigator.canShare({files: [file]})) { await navigator.share({files: [file], title: "بطاقتي"}); return; }
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    } catch (e) { if (e && e.name === "AbortError") return; toast("ما قدرنا نحفظ الصورة. صوّر الشاشة بدالها"); }
+  };
 }
 
 /* ---------- attendance correction by academic affairs (no lock applies to them) ---------- */
@@ -2964,7 +3020,7 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses"];
 async function backupAll(note){
   const out = {kind: "asas-backup-v1", at: new Date().toISOString(), note: note || "", data: {}};
   for (const c of ALL_COLLS) {
@@ -3030,6 +3086,39 @@ function adminArchive(el){
 
 
 /* ================= fee clearance (read by academic affairs for certificates) ================= */
+/* every trainee gets one public, unguessable ID-card token; the QR on the card opens ?id=TOKEN */
+const newIdToken = () => { const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", r = crypto.getRandomValues(new Uint8Array(16)); return Array.from(r, x => A[x % A.length]).join(""); };
+function syncIdCards(){
+  if (S._idBusy || !S.idLoaded || !S.students || !Object.keys(S.students).length) return;
+  const b = writeBatch(db); let n = 0;
+  Object.entries(S.students).forEach(([num, st]) => {
+    const t = (S.idTok || {})[num], cur = t && S.idDocs[t];
+    if (!cur) { b.set(ref("idcards/" + newIdToken()), {num, name: st.name || "", gender: st.gender || "", at: today()}); n++; }
+    else if (cur.name !== (st.name || "") || cur.gender !== (st.gender || "")) { b.set(ref("idcards/" + t), {name: st.name || "", gender: st.gender || ""}, {merge: true}); n++; }
+  });
+  Object.entries(S.idDocs || {}).forEach(([t, v]) => { if (!S.students[v.num] || S.idTok[v.num] !== t) { b.delete(ref("idcards/" + t)); n++; } });
+  if (!n || n > 450) return;
+  S._idBusy = true;
+  b.commit().catch(() => {}).finally(() => { S._idBusy = false; });
+}
+const idVerifyUrl = t => `${SITE()}?id=${t}`;
+function renderIdVerify(app){
+  if (S._ivHTML) { app.innerHTML = S._ivHTML; return; }
+  if (S._ivBusy) return; S._ivBusy = true;
+  const box = inner => `<div class="card" style="max-width:520px;width:100%;justify-self:center;text-align:center"><img src="logo-mark.png" alt="" style="width:84px">${inner}<p class="muted" style="margin-bottom:0">${esc(INST_AR)} · تم التحقق ${esc(bothDates(today()))}</p></div>`;
+  app.innerHTML = box(`<p class="muted">جاري التحقق…</p>`);
+  Promise.all([getDoc(ref("idcards/" + S.idv)), getDoc(ref("public/disabled")).catch(() => null)]).then(([snap, dis]) => {
+    const off = (dis && dis.exists() && dis.data().list) || {};
+    if (!snap.exists()) app.innerHTML = box(`<div class="idv bad"><b>✕</b><h2>بطاقة غير صالحة</h2><p>هذي البطاقة غير مسجلة في المعهد، أو انلغت.</p></div>`);
+    else { const c = snap.data();
+      app.innerHTML = box(off[c.num] ? `<div class="idv bad"><b>✕</b><h2>بطاقة موقوفة</h2><p>حساب ${c.gender === "f" ? "المتدربة" : "المتدرب"} موقوف حالياً. للاستفسار تواصل مع الشؤون الأكاديمية.</p></div>
+        <div class="list" style="text-align:right"><div class="item"><span class="grow">الاسم</span><b>${esc(c.name)}</b></div><div class="item"><span class="grow">الرقم التدريبي</span><b dir="ltr">${esc(c.num)}</b></div></div>`
+        : `<div class="idv ok"><b>✓</b><h2>بطاقة صالحة</h2><p>${c.gender === "f" ? "متدربة مسجلة" : "متدرب مسجل"} حالياً في المعهد.</p></div>
+        <div class="list" style="text-align:right"><div class="item"><span class="grow">الاسم</span><b>${esc(c.name)}</b></div><div class="item"><span class="grow">الرقم التدريبي</span><b dir="ltr">${esc(c.num)}</b></div><div class="item"><span class="grow">الصفة</span><b>${c.gender === "f" ? "متدربة" : "متدرب"}</b></div></div>`); }
+    S._ivHTML = app.innerHTML;
+  }).catch(() => { app.innerHTML = `<div class="notice err">تعذّر التحقق، حاول مرة ثانية.</div>`; S._ivBusy = false; });
+}
+
 function syncFinClear(){
   if (S._fcBusy || !S.finAcc || !S.pays || !S.finClearLoaded) return;
   const want = {};

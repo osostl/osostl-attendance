@@ -42,6 +42,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .top .spacer{flex:1}
 .top .who{font-size:13px;display:flex;align-items:center;gap:8px}
 .wrap{max-width:1040px;margin:0 auto;padding:18px 16px 60px;display:grid;gap:16px}
+.wrap > *,.card,.list,.item > .grow{min-width:0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
 .card h2{font-family:var(--display);font-weight:600;font-size:18px;margin:0 0 10px;color:var(--green);text-wrap:balance}
 .card h3{font-size:15px;margin:0 0 8px}
@@ -91,7 +92,10 @@ textarea{min-height:110px;resize:vertical}
 .seg button{border:0;background:#fff;padding:7px 11px;cursor:pointer;font-size:13.5px;font-weight:600;color:var(--muted)}
 .seg button+button{border-inline-start:1px solid var(--line)}
 .seg button.on.p{background:var(--ok);color:#fff}.seg button.on.l{background:#D9A400;color:#fff}.seg button.on.a{background:var(--abs);color:#fff}.seg button.on.e{background:var(--exc);color:#fff}
-.times{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
+.idv{margin:10px 0 14px}.idv b{display:inline-grid;place-items:center;width:64px;height:64px;border-radius:50%;font-size:34px;color:#fff}.idv.ok b{background:var(--ok)}.idv.bad b{background:var(--abs)}.idv h2{margin:10px 0 4px;font-size:24px}.idv.ok h2{color:var(--ok)}.idv.bad h2{color:var(--abs)}.idv p{margin:0;color:var(--muted)}
+.idcBox svg{width:100%;height:auto;display:block;max-width:560px;margin:0 auto;border-radius:16px;box-shadow:0 6px 22px rgba(18,30,24,.14)}
+.idcFull{position:fixed;inset:0;z-index:60;background:#0f1a14;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:16px}.idcFull svg{width:min(96vw,150vh);height:auto;border-radius:18px}.idcFull .muted{color:#9fb0a6}
+.times{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
 .times input{width:118px;padding:6px 8px}
 .sticky{position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0}
 .tbl{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff}
@@ -224,7 +228,7 @@ tr:nth-child(even) td{background:#FAFBFA}
 <div class="modal" id="modal" role="dialog" aria-modal="true"><div class="box" id="modalBox"></div></div>
 <div class="toast" id="toast" role="status"></div>
 
-<script type="module" src="./app.js?v=46"></script>
+<script type="module" src="./app.js?v=49"></script>
 <script>
 (function(){
   var b = document.getElementById("themeBtn"), root = document.documentElement;
