@@ -3114,7 +3114,7 @@ const QUOTA_BYTES = 1024 ** 3;
 function saveUsage(out, total){
   if (S.adminRole !== "admin" || ["students", "att", "payments", "receipts"].some(c => !out.data[c])) return;   // partial backup (another role) would under-count
   const by = {}, docs = {};
-  ALL_COLLS.forEach(c => { by[c] = new Blob([JSON.stringify(out.data[c])]).size; docs[c] = Object.keys(out.data[c]).length; });
+  ALL_COLLS.forEach(c => { const d = out.data[c] || {}; by[c] = new Blob([JSON.stringify(d)]).size; docs[c] = Object.keys(d).length; });
   S.usage = {at: out.at, bytes: total, by, docs};
   setDoc(ref("public/usage"), S.usage).catch(() => {});
 }
@@ -3158,7 +3158,7 @@ async function backupAll(note){
     out.data[c] = {}; snap.docs.forEach(d => { const v = d.data(); if (c === "logs" && v.at && v.at.toDate) v.at = v.at.toDate().toISOString(); out.data[c][d.id] = toPlain(v); });
   }
   const blob = new Blob([JSON.stringify(out)], {type: "application/json"});
-  saveUsage(out, blob.size);
+  try { saveUsage(out, blob.size); } catch (e) { console.error(e); }   // the estimate must never block the backup itself
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `asas-backup-${today()}.json`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   logAction("نسخة احتياطية", note || "");
