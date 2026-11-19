@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction, getCountFromServer } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction, getCountFromServer, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
@@ -466,11 +466,23 @@ const ICON = {
 const cdCells = ms => { const s = Math.max(0, Math.floor(ms / 1000)), parts = [[Math.floor(s / 86400), "يوم"], [Math.floor(s % 86400 / 3600), "ساعة"], [Math.floor(s % 3600 / 60), "دقيقة"], [s % 60, "ثانية"]]; return parts.map(([v, l]) => `<div><b>${String(v).padStart(2, "0")}</b><span>${l}</span></div>`).join(""); };
 const DEFAULT_FAQ = [
   {q: "نسيت رمز الدخول، وش أسوي؟", a: "تواصل مع الشؤون الأكاديمية، ويعطونك رمز جديد على طول."},
+  {q: "يطلع لي «حسابك موقوف مؤقتاً»", a: "تواصل مع الشؤون الأكاديمية عشان يوضحون لك السبب ويفعّلون حسابك."},
+  {q: "كيف أثبّت البوابة على جوالي؟", a: "اضغط «تثبيت التطبيق» في الشريط الأخضر فوق. على الآيفون: من Safari اضغط زر المشاركة، ثم «إضافة إلى الشاشة الرئيسية»."},
+  {q: "متى ينحسب علي غياب؟", a: "الغياب بدون عذر ينحسب. التأخير ينحسب حضور، والعذر المقبول ما ينحسب غياب، وأيام الإجازات الرسمية ما فيها تحضير."},
+  {q: "كم أقدر أغيب قبل الحرمان؟", a: "افتح «حضوري» في بوابة الطلاب، ويطلع لك نسب الإنذار والحرمان، وكم غياب باقي لك في كل مقرر."},
   {q: "كيف أرفع عذر غياب؟", a: "من بوابة الطلاب، افتح «الأعذار»، واختر المحاضرة، واكتب السبب، وأرفق صورة العذر."},
-  {q: "وين ألقى رابط المحاضرة عن بُعد والتسجيلات؟", a: "في بوابة الطلاب، الصفحة الرئيسية، تحت كل مقرر."},
+  {q: "رفعت عذر، كيف أعرف إنه انقبل؟", a: "الشؤون الأكاديمية تراجعه، وحالته تطلع لك في «الأعذار»: قيد المراجعة أو مقبول أو مرفوض."},
+  {q: "حضوري مسجّل غلط، وش أسوي؟", a: "كلّم مدرب المقرر أو الشؤون الأكاديمية بأسرع وقت، لأن التحضير يتقفل على المدرب بعد مدة."},
+  {q: "وين ألقى جدولي ورابط المحاضرة عن بُعد؟", a: "في الصفحة الرئيسية لبوابة الطلاب: الجدول الأسبوعي، وتحت كل مقرر زر دخول المحاضرة على Teams وتسجيلات المحاضرات."},
   {q: "متى تظهر درجاتي؟", a: "بعد ما يرفعها المدرب وتعتمدها الشؤون الأكاديمية، وتظهر لك في الصفحة الرئيسية."},
-  {q: "كيف أعرف رسومي والمبلغ المتبقي علي؟", a: "من بوابة الطلاب، افتح «المالية»، وتشوف جدول الدفعات وتقدر تطبع سنداتك."},
-  {q: "كيف أثبّت البوابة على جوالي؟", a: "اضغط «تثبيت التطبيق» في الشريط الأخضر فوق. على الآيفون: من Safari اضغط زر المشاركة، ثم «إضافة إلى الشاشة الرئيسية»."}
+  {q: "وين ألقى مواعيد الاختبارات والإجازات؟", a: "في «المواعيد القادمة» بالصفحة الرئيسية، حسب التقويم المعتمد من المؤسسة العامة للتدريب التقني والمهني."},
+  {q: "كيف أعرف المبلغ المتبقي علي؟", a: "من بوابة الطلاب افتح «طلبات المالية» وأرسل «استفسار مالي»، ومسؤول المالية يتواصل معك على الواتساب."},
+  {q: "كيف آخذ فاتورة نهائية بعد السداد؟", a: "بعد سداد كامل الرسوم يظهر لك زر «طلب الفاتورة النهائية» في «طلبات المالية». تنعتمد وتنختم، وبعدها تقدر تطبعها."},
+  {q: "وين بطاقتي التدريبية؟", a: "في تبويب «بطاقتي» ببوابة الطلاب. تقدر تحفظها صورة، وأي جهة تقدر تتحقق منها من الباركود."},
+  {q: "وين ألقى شهاداتي؟", a: "آخر الصفحة الرئيسية في بوابة الطلاب، وتقدر تطبعها أو تحفظها PDF."},
+  {q: "كيف تتحقق جهة من شهادتي؟", a: "تكتب رمز الشهادة في «التحقق من الشهادات» بالصفحة الرئيسية للموقع، أو تصوّر الباركود اللي على الشهادة."},
+  {q: "البوابة ما تتحدث أو فيها شي غريب", a: "سكّر المتصفح أو التطبيق وافتحه مرة ثانية. وإذا استمرت المشكلة تواصل معنا."},
+  {q: "أبي أكلم المعهد", a: "اضغط زر الواتساب الأخضر تحت الصفحة، واختر القسم اللي تبيه."}
 ];
 /* staff keep the public counters on the home page fresh (no names, counts only) */
 async function syncPublicStats(){
@@ -2194,6 +2206,7 @@ function adminSystem(el){
   <div class="card"><h2>نسخة احتياطية</h2>
     <p class="muted" style="margin-top:0">ينزّل ملف فيه كل بيانات البوابة: المدربين، والطلاب، والرموز، والجوالات، والحضور، والدرجات، والسجل. احفظه في مكان آمن لأن فيه بيانات حساسة.</p>
     <button class="btn pri" id="bkB">تنزيل نسخة احتياطية الآن</button>
+    ${S.adminRole === "admin" ? `<h3 style="margin-top:18px">استعادة من نسخة احتياطية</h3><p class="muted" style="margin-top:0">ارفع ملف نسخة احتياطية (asas-backup-….json) عشان ترجع البيانات مثل ما كانت وقتها.</p><input type="file" id="rsF" accept=".json,application/json"><div id="rsOut"></div>` : ""}
   </div>
   <div class="card"><h2>أرشفة الفصل وبدء فصل جديد</h2>
     <p class="muted" style="margin-top:0">ينزّل نسخة احتياطية، ويحفظ ملخص الفصل (حضور ودرجات كل متدرب) في "الأرشيف"، وبعدها يمسح الحضور والدرجات والأعذار والإنذارات والتقييمات. المدربين والطلاب وحساباتهم والشهادات الصادرة تبقى.</p>
@@ -2234,7 +2247,7 @@ function adminSystem(el){
     <p class="muted">تاريخ «يختفي بعد» اختياري. يظهر آخر 4 أخبار.</p>
     <h3 style="margin-top:16px">الأسئلة الشائعة</h3>
     <div class="list" id="fqL">${((S.site || {}).faq || DEFAULT_FAQ).map((f, i) => `<div class="item" style="padding:8px 12px;align-items:flex-start"><div class="grow" style="display:grid;gap:6px"><input type="text" data-fq="${i}" value="${esc(f.q)}" placeholder="السؤال"><textarea data-fa="${i}" style="min-height:50px" placeholder="الجواب">${esc(f.a)}</textarea></div><button class="btn sm danger" data-fdel="${i}">حذف</button></div>`).join("")}</div>
-    <div class="row" style="margin-top:8px"><button class="btn sm" id="fqAdd">+ سؤال</button><button class="btn pri sm" id="fqSave">حفظ الأسئلة</button></div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" id="fqAdd">+ سؤال</button><button class="btn sm" id="fqDef">إضافة الأسئلة المقترحة</button><button class="btn pri sm" id="fqSave">حفظ الأسئلة</button></div>
   </div>
   ${S.adminRole === "admin" ? sigCard("director", "توقيع مدير المعهد", "يظهر على الشهادات في خانة مدير المعهد.") + sigCard("stamp", "الختم الإلكتروني", "يظهر على الشهادات في خانة مدير المعهد، وعلى السندات والكشوف في خانة الختم.") : ""}
   ${S.adminRole === "academic" || S.adminRole === "admin" ? sigCard("academic", "توقيع مسؤول الشؤون الأكاديمية", "يظهر على الشهادات وكشوف الحضور والإنذارات في خانة الشؤون الأكاديمية.") : ""}
@@ -2288,6 +2301,7 @@ function adminSystem(el){
     </div>
     <div class="list" style="margin-top:12px">${annRows("all")}${annRows("trainers")}${annRows("students")}</div>
   </div>`;
+  if ($("#rsF")) $("#rsF").onchange = e => { const f = e.target.files[0]; if (f) restoreRead(f); };
   $("#bkB").onclick = async () => { $("#bkB").disabled = true; try { await backupAll(); toast("نزلت النسخة الاحتياطية"); } catch (e) { console.error(e); toast("تعذّر أخذ النسخة"); } $("#bkB").disabled = false; };
   $("#arB").onclick = async () => {
     const term = $("#arName").value.trim();
@@ -2334,7 +2348,8 @@ function adminSystem(el){
   $("#nwAdd").onclick = () => { const title = $("#nwT").value.trim(); if (!title) return toast("اكتب عنوان الخبر"); saveSite({news: [...((S.site || {}).news || []), {id: "n-" + uid(), title, text: $("#nwX").value.trim(), date: today(), until: $("#nwU").value || ""}].slice(-30)}, "خبر جديد: " + title); };
   el.querySelectorAll("[data-ndel]").forEach(b => b.onclick = () => saveSite({news: ((S.site || {}).news || []).filter(n => n.id !== b.dataset.ndel)}, "حذف خبر"));
   const readFaq = () => [...el.querySelectorAll("[data-fq]")].map(x => ({q: x.value.trim(), a: el.querySelector(`[data-fa="${x.dataset.fq}"]`).value.trim()}));
-  $("#fqSave").onclick = () => saveSite({faq: readFaq().filter(f => f.q && f.a).slice(0, 20)}, "الأسئلة الشائعة");
+  $("#fqSave").onclick = () => saveSite({faq: readFaq().filter(f => f.q && f.a).slice(0, 30)}, "الأسئلة الشائعة");
+  $("#fqDef").onclick = () => { const cur = readFaq().filter(f => f.q && f.a), have = new Set(cur.map(f => norm(f.q))), add = DEFAULT_FAQ.filter(f => !have.has(norm(f.q))); if (!add.length) return toast("كل الأسئلة المقترحة موجودة"); S.site = {...(S.site || {}), faq: [...cur, ...add].slice(0, 30)}; render(); toast(`انضاف ${add.length} سؤال. راجعها واضغط «حفظ الأسئلة»`); };
   $("#fqAdd").onclick = () => { S.site = {...(S.site || {}), faq: [...readFaq(), {q: "", a: ""}]}; render(); };
   el.querySelectorAll("[data-fdel]").forEach(b => b.onclick = () => { const l = readFaq(); l.splice(Number(b.dataset.fdel), 1); saveSite({faq: l.filter(f => f.q && f.a)}, "حذف سؤال"); });
   $("#tvtcImp").onclick = () => {
@@ -3021,18 +3036,63 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles"];
+const NO_RESTORE = ["logs"];
+const APPEND_ONLY = ["payments", "expenses", "commPays"];   // money records are never deleted or rewritten: a restore only brings back missing ones
+const canon = v => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x);   // the audit log is append-only; a restore never rewrites it
+const toPlain = v => v && typeof v.toDate === "function" && "seconds" in v ? {__ts: v.toDate().toISOString()} : Array.isArray(v) ? v.map(toPlain) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toPlain(x)])) : v;
+const fromPlain = v => v && typeof v === "object" && !Array.isArray(v) && (typeof v.__ts === "string" || (typeof v.seconds === "number" && typeof v.nanoseconds === "number" && Object.keys(v).length <= 3)) ? (typeof v.__ts === "string" ? Timestamp.fromDate(new Date(v.__ts)) : new Timestamp(v.seconds, v.nanoseconds)) : Array.isArray(v) ? v.map(fromPlain) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fromPlain(x)])) : v;
 async function backupAll(note){
   const out = {kind: "asas-backup-v1", at: new Date().toISOString(), note: note || "", data: {}};
   for (const c of ALL_COLLS) {
     let snap; try { snap = await getDocs(collection(db, c)); } catch { continue; }   // e.g. finance collections for the academic role
-    out.data[c] = {}; snap.docs.forEach(d => { const v = d.data(); if (c === "logs" && v.at && v.at.toDate) v.at = v.at.toDate().toISOString(); out.data[c][d.id] = v; });
+    out.data[c] = {}; snap.docs.forEach(d => { const v = d.data(); if (c === "logs" && v.at && v.at.toDate) v.at = v.at.toDate().toISOString(); out.data[c][d.id] = toPlain(v); });
   }
   const blob = new Blob([JSON.stringify(out)], {type: "application/json"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `asas-backup-${today()}.json`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   logAction("نسخة احتياطية", note || "");
   return out;
+}
+
+/* ---------- restore: make the portal match a backup file exactly (general administration only) ---------- */
+async function restoreRead(f){
+  const out = $("#rsOut"); out.innerHTML = `<p class="muted">جاري قراءة الملف…</p>`;
+  let bk; try { bk = JSON.parse(await f.text()); } catch { out.innerHTML = ""; return toast("الملف مو نسخة احتياطية صحيحة"); }
+  if (!bk || bk.kind !== "asas-backup-v1" || !bk.data) { out.innerHTML = ""; return toast("الملف مو نسخة احتياطية من البوابة"); }
+  const colls = Object.keys(bk.data).filter(c => ALL_COLLS.includes(c) && !NO_RESTORE.includes(c));
+  const n = c => Object.keys(bk.data[c] || {}).length;
+  S._rs = {bk, colls};
+  out.innerHTML = `<div class="notice" style="margin:10px 0">نسخة بتاريخ <b>${esc(bothDates((bk.at || "").slice(0, 10)))}</b> · الساعة ${esc((bk.at || "").slice(11, 16))} (UTC)${bk.note ? " · " + esc(bk.note) : ""}</div>
+    <div class="stats">${[["students", "طالب"], ["trainers", "مدرب"], ["groups", "شعبة"], ["att", "تحضير"], ["finAccounts", "حساب مالي"], ["payments", "دفعة"]].map(([c, t]) => `<div class="stat"><b>${n(c)}</b><span>${t}</span></div>`).join("")}</div>
+    <div class="notice err" style="margin:10px 0">الاستعادة ترجّع البوابة <b>بالضبط</b> مثل النسخة: أي شي انضاف أو تعدّل بعد تاريخها ينحذف. قبل ما تبدأ بتنزل لك نسخة من الوضع الحالي تلقائياً، احتياط.</div>
+    <label for="rsC">للتأكيد اكتب كلمة: استعادة</label><input type="text" id="rsC" autocomplete="off">
+    <div class="row" style="margin-top:10px"><button class="btn danger" id="rsGo">استعادة البيانات</button><span class="muted" id="rsLog"></span></div>`;
+  $("#rsGo").onclick = restoreRun;
+}
+async function restoreRun(){
+  if (S.adminRole !== "admin") return toast("الاستعادة من حساب الإدارة بس");
+  if ($("#rsC").value.trim() !== "استعادة") return toast("اكتب كلمة: استعادة");
+  const {bk, colls} = S._rs || {}; if (!bk) return;
+  const btn = $("#rsGo"), log = t => { const l = $("#rsLog"); if (l) l.textContent = t; };
+  btn.disabled = true;
+  try { log("تنزيل نسخة من الوضع الحالي…"); await backupAll("قبل الاستعادة"); } catch { btn.disabled = false; log(""); return toast("ما قدرنا نأخذ نسخة من الوضع الحالي، الاستعادة توقفت"); }
+  const failed = [], kept = {};
+  for (const c of colls) {
+    try {
+      log(`جاري استعادة ${c}…`);
+      const want = bk.data[c] || {}, cur = await getDocs(collection(db, c)), have = {};
+      cur.docs.forEach(d => have[d.id] = canon(toPlain(d.data())));
+      const ops = [], keep = APPEND_ONLY.includes(c);
+      if (!keep) cur.docs.forEach(d => { if (!(d.id in want)) ops.push(b => b.delete(ref(`${c}/${d.id}`))); });
+      Object.entries(want).forEach(([id, v]) => { if (id in have && (keep || have[id] === canon(v))) return; if (keep && (v.void || !(Number(v.amount) > 0))) return; ops.push(b => b.set(ref(`${c}/${id}`), fromPlain(v))); });
+      if (keep) Object.keys(have).forEach(id => { if (!(id in want)) kept[c] = (kept[c] || 0) + 1; });
+      for (let i = 0; i < ops.length; i += 300) { const b = writeBatch(db); ops.slice(i, i + 300).forEach(f => f(b)); await b.commit(); }
+    } catch (e) { console.error(c, e); failed.push(c); }
+  }
+  logAction("استعادة نسخة احتياطية", `${(bk.at || "").slice(0, 16)}${failed.length ? " · تعذّر: " + failed.join("، ") : ""}`);
+  log(""); btn.disabled = false;
+  $("#rsOut").innerHTML = failed.length ? `<div class="notice err">انتهت الاستعادة، لكن تعذّرت هذه الأقسام: ${esc(failed.join("، "))}. حاول مرة ثانية.</div>` : `<div class="notice">تمت الاستعادة ✓ البوابة الحين مطابقة للنسخة. حدّث الصفحة.${Object.keys(kept).length ? `<br>السجلات المالية ما تنحذف أبداً، فبقت ${Object.values(kept).reduce((a, b) => a + b, 0)} دفعة/مصروف مسجّلة بعد تاريخ النسخة. إذا ما تبيها، ألغِها من المالية.` : ""}</div>`;
 }
 
 /* ---------- term archive ---------- */
@@ -3892,11 +3952,37 @@ async function syncTrainerNumbers(){
   b.set(ref("public/trainers"), {list: {}});
   try { await b.commit(); if (missing.length) toast(`انعطى ${missing.length} مدرب أرقام دخول`); } catch (e) { S._trainerSynced = false; console.error(e); }
 }
+function editTrainer(tid){
+  const t = S.trainers[tid]; if (!t) return;
+  const ph = (S.trPhones || {})[tid] || "";
+  $("#modalBox").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0">تعديل بيانات ${t.gender === "f" ? "المدربة" : "المدرب"}</h2><button class="btn sm" id="teX">إغلاق</button></div>
+    <label for="teN">الاسم</label><input type="text" id="teN" value="${esc(t.name)}" maxlength="80">
+    <label for="teG">الصفة</label><select id="teG"><option value="m" ${t.gender !== "f" ? "selected" : ""}>مدرب</option><option value="f" ${t.gender === "f" ? "selected" : ""}>مدربة</option></select>
+    <label for="teP">الجوال</label><input type="tel" id="teP" dir="ltr" value="${esc(ph ? "0" + String(ph).replace(/^966/, "") : "")}" placeholder="05xxxxxxxx" inputmode="numeric">
+    <p class="muted">رقم المدرب (${esc(t.num || "—")}) ورمز الدخول ما يتغيرون. لرمز جديد استخدم زر «رمز جديد».</p>
+    <div class="row" style="margin-top:12px"><button class="btn pri" id="teS">حفظ</button></div>`;
+  $("#modal").classList.add("on");
+  $("#teX").onclick = closeModal;
+  $("#teS").onclick = async () => {
+    const name = $("#teN").value.trim().replace(/\s+/g, " "), gender = $("#teG").value, raw = $("#teP").value.trim(), phone = raw ? normPhone(raw) : "";
+    if (name.length < 2) return toast("اكتب الاسم");
+    if (phone && !/^9665\d{8}$/.test(phone)) return toast("رقم الجوال غير صحيح");
+    $("#teS").disabled = true;
+    try {
+      const b = writeBatch(db);
+      b.set(ref("trainers/" + tid), {name, gender}, {merge: true});
+      b.set(ref("secrets/" + tid), {phone}, {merge: true});
+      await b.commit();
+      logAction("تعديل بيانات مدرب", t.name === name ? name : `${t.name} ← ${name}`);
+      toast("انحفظ التعديل"); closeModal();
+    } catch (e) { $("#teS").disabled = false; handleWriteErr(e); }
+  };
+}
 async function saveTrainer(tid, data, code){
   logAction(S.trainers[tid] ? "رمز جديد لمدرب" : "إضافة مدرب", data.name);
   const b = writeBatch(db);
   b.set(ref("trainers/" + tid), data);
-  if (code) b.set(ref("secrets/" + tid), {code});
+  if (code) b.set(ref("secrets/" + tid), {code}, {merge: true});
   b.set(ref("public/trainerLogin"), trainerLoginMap({...S.trainers, [tid]: {id: tid, ...data}}));
   await b.commit();
 }
@@ -3917,6 +4003,7 @@ function adminTrainers(el){
     return `<div class="item"><div class="grow"><div class="t">${esc(trainerTitle(t))}</div><div class="muted">${gs.length} شعبة · ${n} متدرب${gs.length ? " · " + gs.map(g => esc(g.course)).join("، ") : ""}</div></div>
       <span class="code">${esc(t.num || "—")}</span><span class="code">${esc(S.secrets[t.id] || "••••••")}</span>
       <span class="pill ${(S.trPhones || {})[t.id] ? "p" : ""}" dir="ltr">${esc((S.trPhones || {})[t.id] || "بدون جوال")}</span>
+      <button class="btn sm" data-tedit="${esc(t.id)}">تعديل</button>
       <button class="btn sm gold" data-twa="${esc(t.id)}">واتساب</button>
       <button class="btn sm" data-copy="${esc(t.id)}">نسخ</button>
       <button class="btn sm" data-new="${esc(t.id)}">رمز جديد</button>
@@ -3932,6 +4019,7 @@ function adminTrainers(el){
     $("#ntb").disabled = false;
   };
   el.querySelectorAll("[data-twa]").forEach(b => b.onclick = () => openWhatsAppTrainer(b.dataset.twa));
+  el.querySelectorAll("[data-tedit]").forEach(b => b.onclick = () => editTrainer(b.dataset.tedit));
   el.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
     const t = S.trainers[b.dataset.copy], code = S.secrets[t.id];
     const msg = `${trainerTitle(t)}\nرقم المدرب: ${t.num || "—"}\nرمز الدخول: ${code}\nبوابة المدربين: ${location.href.split("#")[0].split("?")[0]}`;
