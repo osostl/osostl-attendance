@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction, getCountFromServer, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction, getCountFromServer, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
@@ -47,10 +47,19 @@ let app, auth, db;
 if (configured) {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
-  db = getFirestore(app);
+  // local cache: a page reload (or a second tab) resumes from the browser copy and
+  // Firestore bills only the documents that changed, instead of re-reading everything
+  try { db = initializeFirestore(app, {localCache: persistentLocalCache({tabManager: persistentMultipleTabManager()})}); }
+  catch { db = getFirestore(app); }
   setPersistence(auth, browserLocalPersistence).catch(() => {});
 }
 const ref = path => doc(db, ...path.split("/"));
+/* sign out and wipe the cached copy, so nothing stays on a shared computer */
+async function logout(){
+  try { await signOut(auth); } catch {}
+  try { await terminate(db); await clearIndexedDbPersistence(db); } catch {}
+  location.reload();
+}
 
 /* per-document write queue: latest data wins, one write in flight per path */
 const Q = {};
@@ -62,12 +71,27 @@ function saveDoc(path, data){
     q.busy = true;
     while (q.next) {
       const d = q.next; q.next = null;
-      try { await setDoc(ref(path), d); }
+      try { await setDoc(ref(path), d); if (path.startsWith("att/")) notify("att", path.slice(4), 20000); }
       catch (e) { handleWriteErr(e); q.next = null; }
     }
     q.busy = false;
   })();
 }
+/* push notifications go through the Cloudflare worker: the portal only says "this record changed",
+   the worker re-reads it with its own key, decides who should hear about it, and never sends the same thing twice */
+const NT = {};
+async function notifyNow(kind, id){
+  const url = ((S.site || {}).pushUrl || "").replace(/\/+$/, ""); if (!url || !S.authUser) return null;
+  const t = await S.authUser.getIdToken();
+  const r = await fetch(url + "/notify", {method: "POST", keepalive: true, headers: {"content-type": "application/json", authorization: "Bearer " + t}, body: JSON.stringify({kind, id})});
+  return r.ok ? r.json() : null;
+}
+function notify(kind, id, delay = 0){
+  if (!(S.site || {}).pushUrl || !S.authUser || !id) return;
+  const k = kind + "/" + id; clearTimeout(NT[k]);
+  NT[k] = setTimeout(() => { delete NT[k]; notifyNow(kind, id).catch(() => {}); }, delay);   // attendance waits a little, so a trainer's quick corrections become one notification
+}
+addEventListener("pagehide", () => Object.keys(NT).forEach(k => { clearTimeout(NT[k]); delete NT[k]; const [kind, ...rest] = k.split("/"); notifyNow(kind, rest.join("/")).catch(() => {}); }));
 const pending = path => { const q = Q[path]; return !!(q && (q.busy || q.next)); };
 function handleWriteErr(e){
   console.error(e);
@@ -178,6 +202,7 @@ function startData(){
   S.subs.push(onSnapshot(collection(db, "grades"), snap => { S.grades = {}; snap.docs.forEach(d => S.grades[d.id] = d.data()); afterData(); }, () => {}));
   if (S.role === "admin") {
     S.subs.push(onSnapshot(ref("public/disabled"), snap => { S.disabled = (snap.exists() && snap.data().list) || {}; afterData(); }, () => {}));
+    if (!FIN()) S.subs.push(onSnapshot(collection(db, "waivers"), snap => { S.waivers = {}; snap.docs.forEach(d => S.waivers[d.id] = d.data()); afterData(); }, () => {}));
     if (SEES_FIN()) startFinance();
     if (!RO()) S.subs.push(onSnapshot(collection(db, "finClear"), snap => { S.finClear = {}; snap.docs.forEach(d => S.finClear[d.id] = d.data()); S.finClearLoaded = true; afterData(); }, () => {}));
     if (FIN()) {
@@ -254,7 +279,7 @@ function renderAnn(){
 }
 
 
-/* ---------- push notifications (sent by Cloud Functions; the portal only registers the device) ---------- */
+/* ---------- push notifications (sent by the Cloudflare worker; the portal only registers the device) ---------- */
 const pushId = t => t.replace(/[^\w:-]/g, "_").slice(0, 1400);
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -290,7 +315,7 @@ function renderTop(){
     if (S.role === "student" && S.myStudent) who = S.myStudent.name;
     w.innerHTML = `<span>${esc(who)}</span>${S.site && S.site.vapid && !pushOn() ? `<button class="btn ghost sm" id="pushBtn">تفعيل الإشعارات</button>` : ""}<button class="btn ghost sm" id="out">خروج</button>`;
     if ($("#pushBtn")) $("#pushBtn").onclick = () => enablePush(false);
-    $("#out").onclick = () => { S.view = "home"; signOut(auth); };
+    $("#out").onclick = () => { S.view = "home"; logout(); };
   } else if (S.view !== "home") {
     w.innerHTML = `<button class="btn ghost sm" id="homeBtn">الرئيسية</button>`;
     $("#homeBtn").onclick = () => go("home");
@@ -1186,7 +1211,7 @@ function bindGrades(g, who){
     const b = writeBatch(db);
     b.set(ref("grades/" + g.id), d);
     (g.students || []).forEach(s => b.set(ref(`results/${s.sid}_${g.id}`), {num: s.sid, groupId: g.id, course: g.course, trainer: tName(g.trainerId), mark: d.marks[s.id], approvedAt: d.approvedAt}));
-    try { await b.commit(); S.grades[g.id] = d; logAction("اعتماد الدرجات ونشرها", g.course); toast("اعتُمدت الدرجات وظهرت للطلاب"); render(); } catch (e) { handleWriteErr(e); }
+    try { await b.commit(); S.grades[g.id] = d; notify("grade", g.id); logAction("اعتماد الدرجات ونشرها", g.course); toast("اعتُمدت الدرجات وظهرت للطلاب"); render(); } catch (e) { handleWriteErr(e); }
   };
   if ($("#gUnapprove")) $("#gUnapprove").onclick = async () => {
     const btn = $("#gUnapprove");
@@ -1538,8 +1563,10 @@ function renderAdmin(app){
   const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
-  app.innerHTML = `${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
+  app.innerHTML = `${backupNag()}${absNag()}${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "follow" && S.allAtt && ["academic", "admin"].includes(S.adminRole) ? (n => n ? ` (${n})` : "")(absAlerts().alerts.filter(alertWaiting).length) : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
+  if ($("#nagAbs")) $("#nagAbs").onclick = () => { S.aTab = "follow"; render(); };
+  if ($("#nagBk")) $("#nagBk").onclick = async e => { e.target.disabled = true; try { await backupAll(); toast("نزلت النسخة الاحتياطية"); render(); } catch (x) { console.error(x); toast("تعذّر أخذ النسخة"); e.target.disabled = false; } };
   ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
 }
 
@@ -2202,7 +2229,7 @@ async function saveSite(patch, label){
 function adminSystem(el){
   const sys = S.sys || {};
   const annRows = k => liveAnnAll(k).map((a, i) => `<div class="item" style="padding:8px 12px"><span class="grow">${esc(a.text)}<div class="muted">${AUD[k]}${a.expires ? " · ينتهي " + esc(a.expires) : " · بدون انتهاء"}</div></span><button class="btn sm danger" data-adel="${k}:${i}">حذف</button></div>`).join("");
-  el.innerHTML = `
+  el.innerHTML = `${usageCard()}
   <div class="card"><h2>نسخة احتياطية</h2>
     <p class="muted" style="margin-top:0">ينزّل ملف فيه كل بيانات البوابة: المدربين، والطلاب، والرموز، والجوالات، والحضور، والدرجات، والسجل. احفظه في مكان آمن لأن فيه بيانات حساسة.</p>
     <button class="btn pri" id="bkB">تنزيل نسخة احتياطية الآن</button>
@@ -2254,6 +2281,7 @@ function adminSystem(el){
   ${S.adminRole === "admin" ? `<div class="card"><h2>الإشعارات</h2>
     <p class="muted" style="margin-top:0">إشعارات تلقائية على جوال المتدرب والمدرب: الغياب، والإنذارات، واعتماد الدرجات، وقرار العذر، والشهادات، والإعلانات، وتذكير الأقساط، ومواعيد التقويم، وتذكير المدرب إذا ما حضّر. كل واحد يفعّلها من زر «تفعيل الإشعارات» فوق بعد ما يدخل.</p>
     <label class="f" for="vapK">مفتاح Web Push (من Firebase: إعدادات المشروع ← Cloud Messaging ← Web Push certificates)<input type="text" id="vapK" dir="ltr" value="${esc((S.site || {}).vapid || "")}" placeholder="BKx…"></label>
+    <label class="f" for="pushU" style="margin-top:8px">رابط خدمة الإشعارات (Cloudflare)<input type="url" id="pushU" dir="ltr" value="${esc((S.site || {}).pushUrl || "")}" placeholder="https://osos-push.….workers.dev"></label>
     <div class="row" style="margin-top:8px"><button class="btn pri sm" id="vapSave">حفظ</button>${(S.site || {}).vapid ? `<button class="btn sm" id="pushTest">إرسال إشعار تجريبي لي</button>` : ""}</div></div>` : ""}
   <div class="card"><h2>الشهادات والمالية</h2>
     <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
@@ -2323,8 +2351,8 @@ function adminSystem(el){
   if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
   if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
   bindSigCards(el);
-  if ($("#vapSave")) $("#vapSave").onclick = () => { const v = $("#vapK").value.trim(); if (v && !/^[A-Za-z0-9_-]{60,120}$/.test(v)) return toast("المفتاح غير صحيح، انسخه كامل"); saveSite({vapid: v, portalUrl: SITE()}, "مفتاح الإشعارات"); };
-  if ($("#pushTest")) $("#pushTest").onclick = async () => { if (!pushOn()) { await enablePush(false); if (!pushOn()) return; } try { await setDoc(ref("pushTest/t-" + uid() + uid()), {email: S.authUser.email, at: new Date().toISOString()}); toast("انرسل طلب الإشعار، المفروض يوصلك خلال ثواني"); } catch (e) { handleWriteErr(e); } };
+  if ($("#vapSave")) $("#vapSave").onclick = () => { const v = $("#vapK").value.trim(); if (v && !/^[A-Za-z0-9_-]{60,120}$/.test(v)) return toast("المفتاح غير صحيح، انسخه كامل"); const u = $("#pushU").value.trim().replace(/\/+$/, ""); if (u && !/^https:\/\/[\w.-]+(\/[\w./-]*)?$/.test(u)) return toast("الرابط غير صحيح، لازم يبدأ بـ https://"); saveSite({vapid: v, pushUrl: u, portalUrl: SITE()}, "إعدادات الإشعارات"); };
+  if ($("#pushTest")) $("#pushTest").onclick = async () => { if (!pushOn()) { await enablePush(false); if (!pushOn()) return; } if (!(S.site || {}).pushUrl) return toast("حط رابط خدمة الإشعارات أول واحفظه"); try { const r = await notifyNow("test", "me"); toast(r && r.sent ? "انرسل، المفروض يوصلك خلال ثواني" : r ? "الخدمة شغّالة بس ما لقت جهاز مفعّل باسمك. فعّل الإشعارات من الزر فوق" : "ما قدرت أوصل لخدمة الإشعارات. تأكد من الرابط"); } catch { toast("ما قدرت أوصل لخدمة الإشعارات. تأكد من الرابط"); } };
   $("#siteSave").onclick = async () => {
     const d = {};
     SOCIAL.filter(([k]) => k !== "whatsapp").forEach(([k]) => d[k] = $("#so-" + k).value.trim().slice(0, 120));
@@ -2382,7 +2410,7 @@ function adminSystem(el){
   };
   el.querySelectorAll("[data-hdel]").forEach(b => b.onclick = () => { const list = [...((S.sys && S.sys.holidays) || [])]; list.splice(Number(b.dataset.hdel), 1); saveSys({holidays: list}, "حذف إجازة"); });
   const saveAnn = async (k, items, label) => {
-    try { await setDoc(ref("ann/" + k), {items}); S.ann[k] = items; logAction(label, AUD[k]); renderAnn(); render(); }
+    try { await setDoc(ref("ann/" + k), {items}); S.ann[k] = items; notify("ann", k); logAction(label, AUD[k]); renderAnn(); render(); }
     catch (e) { handleWriteErr(e); }
   };
   $("#aAdd").onclick = () => {
@@ -2402,24 +2430,38 @@ async function loadAllAtt(force){
   const snap = await getDocs(collection(db, "att"));
   S.allAtt = snap.docs.map(d => d.data()); S.allAttAt = new Date();
 }
-function adminFollow(el){
-  if (!S.allAtt) {
-    el.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري تحميل سجلات الحضور…</p></div>`;
-    loadAllAtt().then(() => { if (S.aTab === "follow") render(); }).catch(e => { console.error(e); el.innerHTML = `<div class="notice err">تعذّر تحميل السجلات.</div>`; });
-    return;
-  }
-  const byGroup = {}; S.allAtt.forEach(d => (byGroup[d.groupId] = byGroup[d.groupId] || []).push(d));
+/* every student who reached a warning level; shared by the follow-up tab and the alert banner */
+function absAlerts(){
+  const byGroup = {}; (S.allAtt || []).forEach(d => (byGroup[d.groupId] = byGroup[d.groupId] || []).push(d));
   const gs = sortedGroups(), alerts = [], courses = [];
   gs.forEach(g => {
     const docs = countable(byGroup[g.id]);
     let sum = 0, n = 0;
     (g.students || []).forEach(s => {
       const st = absStats(g, s.id, docs); if (docs.length) { sum += st.absPct; n++; }
-      if (st.level) alerts.push({g, s, st});
+      if (st.level) alerts.push({g, s, st, wid: s.sid ? `${s.sid}_${g.id}_${st.level}` : ""});
     });
     if (docs.length) courses.push({g, avg: Math.round(sum / Math.max(n, 1) * 10) / 10, held: docs.length});
   });
   alerts.sort((a, b) => b.st.level - a.st.level || b.st.absPct - a.st.absPct);
+  return {gs, alerts, courses};
+}
+/* waiting = reached a level, has an academic number, no warning issued and not waived by academic affairs */
+const alertWaiting = a => a.wid && !(S.warnings || {})[a.wid] && !(S.waivers || {})[a.wid];
+function absNag(){
+  if (!["academic", "admin"].includes(S.adminRole)) return "";
+  if (!S.allAtt) { if (!S._attLoading && S.loaded && S.loaded.groups) { S._attLoading = true; loadAllAtt().then(() => { if (S.view === "admin" && !busyEditing()) render(); }).catch(() => {}).finally(() => { S._attLoading = false; }); } return ""; }
+  const w = absAlerts().alerts.filter(alertWaiting); if (!w.length || S.aTab === "follow") return "";
+  const n3 = w.filter(a => a.st.level === 3).length;
+  return `<div class="notice err" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="grow">تنبيه غياب: ${w.length} طالب وصلوا نسبة ${n3 ? `حرمان (${n3}) أو إنذار` : "إنذار"} وما صدر لهم إنذار.</span><button class="btn sm pri" id="nagAbs">افتح المتابعة</button></div>`;
+}
+function adminFollow(el){
+  if (!S.allAtt) {
+    el.innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري تحميل سجلات الحضور…</p></div>`;
+    loadAllAtt().then(() => { if (S.aTab === "follow") render(); }).catch(e => { console.error(e); el.innerHTML = `<div class="notice err">تعذّر تحميل السجلات.</div>`; });
+    return;
+  }
+  const {gs, alerts, courses} = absAlerts();
   courses.sort((a, b) => b.avg - a.avg);
   const noTotal = gs.filter(g => !g.totalSessions).length;
   const month = S.repMonth || today().slice(0, 7);
@@ -2448,8 +2490,10 @@ function adminFollow(el){
     ${alerts.length ? `<div class="tbl"><table><thead><tr><th class="nm">الطالب</th><th class="nm">المقرر</th><th>غياب</th><th>النسبة</th><th>الحالة</th><th></th></tr></thead><tbody>
     ${alerts.map(({g, s, st}) => `<tr><td class="nm">${esc(s.name)}</td><td class="nm">${esc(g.course)}</td><td>${st.a}${st.total ? "/" + st.total : ""}</td><td>${st.absPct}%</td><td>${levelPill(st)}</td>
       <td>${s.sid ? (() => { const wid = `${s.sid}_${g.id}_${st.level}`, w = (S.warnings || {})[wid];
-        return `${w ? `<span class="pill p">صدر ${esc(w.date.slice(5))}</span> <button class="btn sm" data-pw="${esc(wid)}">طباعة</button>` : `<button class="btn sm" data-issue="${esc(wid)}">إصدار</button>`} <button class="btn sm gold" data-warn="${esc(s.sid)}" data-c="${esc(g.course)}" data-l="${esc(LEVEL[st.level])}" data-p="${st.absPct}">واتساب</button>`; })() : ""}</td></tr>`).join("")}</tbody></table></div>
-    ${alerts.some(({g, s, st}) => s.sid && !(S.warnings || {})[`${s.sid}_${g.id}_${st.level}`]) ? `<div class="row" style="margin-top:10px"><button class="btn pri sm" id="issueAll">إصدار كل الإنذارات غير الصادرة</button><span class="muted">الإنذار الصادر يظهر للطالب في بوابته.</span></div>` : ""}`
+        const wv = (S.waivers || {})[wid];
+        if (!w && wv) return `<span class="pill">متغاضى عنه${wv.at ? " " + esc(wv.at.slice(5, 10)) : ""}</span>${RO() ? "" : ` <button class="btn sm" data-unwaive="${esc(wid)}">تراجع</button>`}`;
+        return `${w ? `<span class="pill p">صدر ${esc(w.date.slice(5))}</span> <button class="btn sm" data-pw="${esc(wid)}">طباعة</button>` : `<button class="btn sm" data-issue="${esc(wid)}">إصدار</button>${RO() ? "" : ` <button class="btn sm" data-waive="${esc(wid)}">تغاضي</button>`}`} <button class="btn sm gold" data-warn="${esc(s.sid)}" data-c="${esc(g.course)}" data-l="${esc(LEVEL[st.level])}" data-p="${st.absPct}">واتساب</button>`; })() : ""}</td></tr>`).join("")}</tbody></table></div>
+    ${alerts.some(alertWaiting) ? `<div class="row" style="margin-top:10px"><button class="btn pri sm" id="issueAll">إصدار كل الإنذارات غير الصادرة</button><span class="muted">الإنذار الصادر يظهر للطالب في بوابته.</span></div>` : ""}`
     : `<p class="muted" style="margin:0">ما فيه طلاب وصلوا نسبة الإنذار.</p>`}
   </div>
   ${Object.values(S.warnings || {}).some(x => x.date === today()) ? `<div class="row"><button class="btn sm" id="pwToday">طباعة الإنذارات الصادرة اليوم (${Object.values(S.warnings).filter(x => x.date === today()).length})</button></div>` : ""}
@@ -2475,12 +2519,22 @@ function adminFollow(el){
   const issue = async list => {
     const b = writeBatch(db);
     list.forEach(({g, s, st}) => b.set(ref(`warnings/${s.sid}_${g.id}_${st.level}`), {num: s.sid, name: s.name, groupId: g.id, course: g.course, level: st.level, levelName: LEVEL[st.level], absPct: st.absPct, absences: st.a, date: today(), by: S.adminRole}));
-    try { await b.commit(); logAction("إصدار إنذارات", list.map(x => `${x.s.name} (${LEVEL[x.st.level]})`).join("، ")); toast(`صدر ${list.length} إنذار`); } catch (e) { handleWriteErr(e); }
+    try { await b.commit(); list.forEach(({g, s, st}) => notify("warning", `${s.sid}_${g.id}_${st.level}`)); logAction("إصدار إنذارات", list.map(x => `${x.s.name} (${LEVEL[x.st.level]})`).join("، ")); toast(`صدر ${list.length} إنذار`); } catch (e) { handleWriteErr(e); }
   };
   el.querySelectorAll("[data-pw]").forEach(b => b.onclick = () => printWarnings([S.warnings[b.dataset.pw]]));
   if ($("#pwToday")) $("#pwToday").onclick = () => printWarnings(Object.values(S.warnings || {}).filter(x => x.date === today()));
   el.querySelectorAll("[data-issue]").forEach(b => b.onclick = () => { const a = alerts.find(({g, s, st}) => `${s.sid}_${g.id}_${st.level}` === b.dataset.issue); if (a) issue([a]); });
-  if ($("#issueAll")) $("#issueAll").onclick = () => issue(alerts.filter(({g, s, st}) => s.sid && !(S.warnings || {})[`${s.sid}_${g.id}_${st.level}`]));
+  if ($("#issueAll")) $("#issueAll").onclick = () => issue(alerts.filter(alertWaiting));
+  el.querySelectorAll("[data-waive]").forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟ ما بيصدر إنذار"; return; }
+    const a = alerts.find(x => x.wid === b.dataset.waive); if (!a) return;
+    const d = {num: a.s.sid, name: a.s.name, groupId: a.g.id, course: a.g.course, level: a.st.level, absPct: a.st.absPct, by: S.adminRole, at: new Date().toISOString()};
+    try { await setDoc(ref("waivers/" + a.wid), d); S.waivers[a.wid] = d; logAction("تغاضي عن إنذار", `${a.s.name} · ${a.g.course} · ${LEVEL[a.st.level]}`); toast("تم، ما بيجيك تنبيه عنه في هذا المستوى"); render(); } catch (e) { handleWriteErr(e); }
+  });
+  el.querySelectorAll("[data-unwaive]").forEach(b => b.onclick = async () => {
+    const id = b.dataset.unwaive, x = (S.waivers || {})[id];
+    try { await deleteDoc(ref("waivers/" + id)); delete S.waivers[id]; logAction("إلغاء التغاضي عن إنذار", x ? `${x.name} · ${x.course}` : id); render(); } catch (e) { handleWriteErr(e); }
+  });
   el.querySelectorAll("[data-warn]").forEach(b => b.onclick = () => openWhatsApp(b.dataset.warn, {type: "warning", course: b.dataset.c, level: b.dataset.l, pct: b.dataset.p}));
 }
 
@@ -2509,7 +2563,7 @@ function adminExcuses(el){
       const aRef = ref(`att/${x.groupId}_${x.date}`), snap = await getDoc(aRef);
       if (entry && snap.exists()) { b.set(aRef, {rec: {[entry.id]: {st: "e", excuse: id}}}, {merge: true}); applied = true; }
     }
-    try { await b.commit(); logAction(ok ? "قبول عذر" : "رفض عذر", `${x.name} · ${x.course} · ${x.date}`); toast(ok ? (applied ? "انقبل العذر وتحوّل الغياب إلى مستأذن" : "انقبل العذر. ما فيه تحضير مسجل لذاك اليوم") : "انرفض العذر"); }
+    try { await b.commit(); notify("excuse", id); if (applied) notify("att", `${x.groupId}_${x.date}`); logAction(ok ? "قبول عذر" : "رفض عذر", `${x.name} · ${x.course} · ${x.date}`); toast(ok ? (applied ? "انقبل العذر وتحوّل الغياب إلى مستأذن" : "انقبل العذر. ما فيه تحضير مسجل لذاك اليوم") : "انرفض العذر"); }
     catch (e) { handleWriteErr(e); }
   };
   el.querySelectorAll("[data-exok]").forEach(b => b.onclick = () => decide(b.dataset.exok, true));
@@ -2738,7 +2792,7 @@ function attEditor(g){
   $("#aeSave").onclick = async () => {
     const rec = {}; Object.entries(ae.rec).forEach(([k, r]) => { const c = {}; ["st", "in", "out", "excuse"].forEach(f => { if (r[f]) c[f] = r[f]; }); if (c.st) rec[k] = c; });
     const d = {groupId: g.id, trainerId: g.trainerId || "", course: g.course, date: ae.date, rec, memberNums: g.memberNums || [], updatedAt: new Date().toISOString(), editedBy: S.adminRole};
-    try { await setDoc(ref(`att/${g.id}_${ae.date}`), d); logAction("تعديل تحضير (الشؤون الأكاديمية)", `${g.course} · ${ae.date}`, "att:" + g.id + ":" + ae.date); toast("انحفظ التعديل"); S._ae = null; }
+    try { await setDoc(ref(`att/${g.id}_${ae.date}`), d); notify("att", `${g.id}_${ae.date}`); logAction("تعديل تحضير (الشؤون الأكاديمية)", `${g.course} · ${ae.date}`, "att:" + g.id + ":" + ae.date); toast("انحفظ التعديل"); S._ae = null; }
     catch (e) { handleWriteErr(e); }
   };
 }
@@ -2888,7 +2942,7 @@ function signRequests(el){
   el.querySelectorAll("[data-srr]").forEach(b => b.onclick = async () => {
     if (!b.dataset.sure) { b.dataset.sure = 1; b.insertAdjacentHTML("beforebegin", `<input type="text" id="srRR" placeholder="سبب الرفض" style="width:160px">`); b.textContent = "تأكيد الرفض"; return; }
     const reason = (($("#srRR") || {}).value || "").trim(); if (!reason) return toast("اكتب سبب الرفض");
-    try { await setDoc(ref("signReqs/" + b.dataset.srr), {status: "rejected", reason, doneAt: new Date().toISOString()}, {merge: true}); logAction("رفض طلب توقيع", reason); } catch (e) { handleWriteErr(e); }
+    try { await setDoc(ref("signReqs/" + b.dataset.srr), {status: "rejected", reason, doneAt: new Date().toISOString()}, {merge: true}); notify("sign", b.dataset.srr); logAction("رفض طلب توقيع", reason); } catch (e) { handleWriteErr(e); }
   });
   el.querySelectorAll("[data-srs]").forEach(b => b.onclick = async () => {
     const r = S.signReqs.find(x => x.id === b.dataset.srs); let d;
@@ -2899,7 +2953,7 @@ function signRequests(el){
       const bt = writeBatch(db);
       bt.set(ref("signFiles/" + r.id + "_signed"), {reqId: r.id, data: out});
       bt.set(ref("signReqs/" + r.id), {status: "signed", doneAt: new Date().toISOString()}, {merge: true});
-      try { await bt.commit(); logAction("توقيع وختم مستند", r.title); toast("انوقّع ورجع للمرسل"); } catch (e) { handleWriteErr(e); }
+      try { await bt.commit(); notify("sign", r.id); logAction("توقيع وختم مستند", r.title); toast("انوقّع ورجع للمرسل"); } catch (e) { handleWriteErr(e); }
     });
   });
   const send = async withMine => {
@@ -2916,7 +2970,7 @@ function signRequests(el){
       const id = "sr-" + uid() + uid(), bt = writeBatch(db);
       bt.set(ref("signReqs/" + id), {title, note, from: S.adminRole, byEmail: S.authUser.email, status: "pending", at: new Date().toISOString()});
       bt.set(ref("signFiles/" + id), {reqId: id, data: doc});
-      try { await bt.commit(); logAction("طلب توقيع", title); toast("انرسل للإدارة"); render(); } catch (e) { handleWriteErr(e); }
+      try { await bt.commit(); notify("sign", id); logAction("طلب توقيع", title); toast("انرسل للإدارة"); render(); } catch (e) { handleWriteErr(e); }
     };
     if (withMine) placeMarks(`توقيعك على: ${title}`, data, go); else go(data);
   };
@@ -3000,7 +3054,7 @@ function openCourse(id){
       const b = writeBatch(db);
       todo.forEach(p => { p.cert = certCode(); p.certDate = today(); b.set(ref("certs/" + p.cert), certOf(p)); });
       const d = {...c}; delete d.id; b.set(ref("courses/" + id), d);
-      try { await b.commit(); S.courses[id] = {id, ...d}; logAction("إصدار شهادات دورة", `${c.title} · ${todo.length}`); toast(`انصدرت ${todo.length} شهادة. أرسلها بالواتساب أو اطبعها`); draw(); }
+      try { await b.commit(); S.courses[id] = {id, ...d}; todo.forEach(p => notify("cert", p.cert)); logAction("إصدار شهادات دورة", `${c.title} · ${todo.length}`); toast(`انصدرت ${todo.length} شهادة. أرسلها بالواتساب أو اطبعها`); draw(); }
       catch (e) { todo.forEach(p => { delete p.cert; delete p.certDate; }); handleWriteErr(e); }
     };
   };
@@ -3049,12 +3103,54 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles", "waivers"];
 const NO_RESTORE = ["logs"];
 const APPEND_ONLY = ["payments", "expenses", "commPays"];   // money records are never deleted or rewritten: a restore only brings back missing ones
 const canon = v => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x);   // the audit log is append-only; a restore never rewrites it
 const toPlain = v => v && typeof v.toDate === "function" && "seconds" in v ? {__ts: v.toDate().toISOString()} : Array.isArray(v) ? v.map(toPlain) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toPlain(x)])) : v;
 const fromPlain = v => v && typeof v === "object" && !Array.isArray(v) && (typeof v.__ts === "string" || (typeof v.seconds === "number" && typeof v.nanoseconds === "number" && Object.keys(v).length <= 3)) ? (typeof v.__ts === "string" ? Timestamp.fromDate(new Date(v.__ts)) : new Timestamp(v.seconds, v.nanoseconds)) : Array.isArray(v) ? v.map(fromPlain) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fromPlain(x)])) : v;
+/* storage estimate: measured for free from each full backup taken by general administration */
+const QUOTA_BYTES = 1024 ** 3;
+function saveUsage(out, total){
+  if (S.adminRole !== "admin" || ["students", "att", "payments", "receipts"].some(c => !out.data[c])) return;   // partial backup (another role) would under-count
+  const by = {}, docs = {};
+  ALL_COLLS.forEach(c => { by[c] = new Blob([JSON.stringify(out.data[c])]).size; docs[c] = Object.keys(out.data[c]).length; });
+  S.usage = {at: out.at, bytes: total, by, docs};
+  setDoc(ref("public/usage"), S.usage).catch(() => {});
+}
+function loadUsage(){
+  if (S.usage !== undefined) return;
+  S.usage = null;
+  getDoc(ref("public/usage")).then(x => { if (x.exists()) S.usage = x.data(); if (S.view === "admin" && !busyEditing()) render(); }).catch(() => {});
+}
+/* general administration gets a reminder when the last full backup is more than a week old */
+function backupNag(){
+  if (S.adminRole !== "admin") return "";
+  loadUsage();
+  if (S.usage === null && !S._usageTried) { S._usageTried = true; return ""; }   // first paint: wait for the read
+  const at = S.usage && S.usage.at ? new Date(S.usage.at) : null, days = at ? Math.floor((Date.now() - at) / 864e5) : null;
+  if (at && days < 7) return "";
+  return `<div class="notice err" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="grow">${at ? `آخر نسخة احتياطية قبل ${days} يوم.` : "ما فيه نسخة احتياطية مسجّلة."} نزّل نسخة الحين واحفظها في مكان آمن.</span><button class="btn sm pri" id="nagBk">تنزيل نسخة احتياطية</button></div>`;
+}
+function usageCard(){
+  loadUsage();
+  const u = S.usage;
+  if (!u) return `<div class="card"><h2>مساحة البيانات</h2><p class="muted" style="margin:0">ما انحسبت للحين. نزّل نسخة احتياطية من حساب الإدارة العامة وبيظهر الحجم هنا تلقائياً.</p></div>`;
+  const est = u.bytes * 2, pct = Math.min(100, est / QUOTA_BYTES * 100);   // ×2: Firestore also stores indexes beside the data
+  const mb = b => b < 1024 * 1024 ? (b / 1024).toFixed(0) + " كيلوبايت" : (b / 1024 / 1024).toFixed(1) + " ميغابايت";
+  const NAMES = {receipts: "صور الإيصالات", signFiles: "ملفات التوقيع", logs: "السجل", att: "التحضير", students: "الطلاب", studentSecrets: "بيانات دخول الطلاب", payments: "الدفعات", sigs: "التواقيع", public: "إعدادات عامة", certs: "الشهادات", results: "النتائج", archives: "الأرشيف", evals: "التقييمات", groups: "الشعب", signReqs: "طلبات التوقيع", finReqs: "طلبات المالية", finAccounts: "الحسابات المالية", trainers: "المدربين", secrets: "رموز المدربين", grades: "الدرجات", excuses: "الأعذار", warnings: "الإنذارات", idcards: "البطاقات", expenses: "المصروفات", courses: "الدورات", joins: "الانضمام", surveys: "الاستبيانات", ann: "الإعلانات", fin: "إعدادات المالية", salaryPays: "الرواتب", commPays: "العمولات", finClear: "إخلاء الطرف"};
+  const top = Object.entries(u.by || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const col = pct >= 85 ? "#c0392b" : pct >= 70 ? "#d68910" : "#1e8449";
+  const when = u.at ? new Date(u.at).toLocaleDateString("ar-SA-u-ca-gregory", {day: "numeric", month: "long", year: "numeric"}) : "";
+  return `<div class="card"><h2>مساحة البيانات</h2>
+    ${pct >= 70 ? `<div class="notice err">المساحة قربت من الحد المجاني (1 جيجابايت). أكبر شي ياخذ مساحة تحت، كلم الدعم الفني قبل ما تمتلي.</div>` : ""}
+    <div style="display:flex;justify-content:space-between;font-weight:700"><span>${mb(est)} تقريباً من 1 جيجابايت</span><span style="color:${col}">${pct < 0.1 ? "أقل من 0.1" : pct.toFixed(1)}%</span></div>
+    <div style="height:10px;border-radius:6px;background:#e5e7eb;overflow:hidden;margin:8px 0"><div style="height:100%;width:${Math.max(pct, 0.5)}%;background:${col}"></div></div>
+    <p class="muted" style="margin:0 0 8px">آخر قياس: ${esc(when)} (يتحدث كل ما نزّلت نسخة احتياطية من حساب الإدارة العامة).</p>
+    ${top.map(([c, b]) => `<div class="item" style="padding:6px 12px"><span class="grow">${esc(NAMES[c] || c)}<span class="muted"> · ${(u.docs || {})[c] || 0} سجل</span></span><span class="muted">${mb(b * 2)}</span></div>`).join("")}
+  </div>`;
+}
+
 async function backupAll(note){
   const out = {kind: "asas-backup-v1", at: new Date().toISOString(), note: note || "", data: {}};
   for (const c of ALL_COLLS) {
@@ -3062,6 +3158,7 @@ async function backupAll(note){
     out.data[c] = {}; snap.docs.forEach(d => { const v = d.data(); if (c === "logs" && v.at && v.at.toDate) v.at = v.at.toDate().toISOString(); out.data[c][d.id] = toPlain(v); });
   }
   const blob = new Blob([JSON.stringify(out)], {type: "application/json"});
+  saveUsage(out, blob.size);
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `asas-backup-${today()}.json`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   logAction("نسخة احتياطية", note || "");
@@ -3121,7 +3218,7 @@ async function archiveTerm(term, opts, log){
     if (rows.length) await setDoc(ref(`archives/${key}_${g.id}`), {term, termKey: key, groupId: g.id, course: g.course, trainer: tName(g.trainerId), held: docs.length, rows, at: today()});
   }
   log("3/4 مسح بيانات الفصل الحالي…");
-  for (const c of ["att", "joins", "grades", "results", "excuses", "warnings", "evals"]) {
+  for (const c of ["att", "joins", "grades", "results", "excuses", "warnings", "waivers", "evals"]) {
     const ids = Object.keys(bk.data[c] || {});
     for (let i = 0; i < ids.length; i += 400) { const b = writeBatch(db); ids.slice(i, i + 400).forEach(id => b.delete(ref(`${c}/${id}`))); await b.commit(); }
     log(`   ${c}: ${ids.length}`);
@@ -3353,7 +3450,7 @@ function studentFinReq(el){
     <label for="frP">جوالك للتواصل</label><input type="tel" id="frP" dir="ltr" placeholder="05xxxxxxxx" inputmode="numeric">
     <div class="row" style="margin-top:10px"><button class="btn pri" id="frSend">إرسال للمالية</button></div>
     ${inq.length ? `<h3>استفساراتك</h3><div class="list">${inq.map(r => `<div class="item"><div class="grow"><div>${esc(r.text)}</div><div class="muted">${esc(bothDates((r.at || "").slice(0, 10)))}</div></div><span class="pill">${r.status === "done" ? "تم التواصل" : "قيد المراجعة"}</span></div>`).join("")}</div>` : ""}</div>`;
-  const add = async d => { const id = "fr-" + uid() + uid(); await setDoc(ref("finReqs/" + id), {num: S.myNum, name: (S.myStudent && S.myStudent.name) || "", status: "new", at: new Date().toISOString(), ...d}); };
+  const add = async d => { const id = "fr-" + uid() + uid(); await setDoc(ref("finReqs/" + id), {num: S.myNum, name: (S.myStudent && S.myStudent.name) || "", status: "new", at: new Date().toISOString(), ...d}); notify("fin", id); };
   if ($("#frPrint")) { $("#frPrint").onclick = () => printInvoice(inv.inv); if (!inv.seen) setDoc(ref("finReqs/" + inv.id), {seen: true}, {merge: true}).catch(() => {}); }
   if ($("#frInv")) $("#frInv").onclick = async e => { e.target.disabled = true; try { await add({type: "invoice"}); toast("انرسل طلبك للمالية"); } catch (x) { e.target.disabled = false; handleWriteErr(x); } };
   $("#frSend").onclick = async e => {
@@ -3378,7 +3475,7 @@ function finReqTab(el){
   el.innerHTML = `<div class="card"><h2>طلبات الفاتورة النهائية</h2><p class="muted" style="margin-top:0">المالية توقّع وترفع للإدارة، والإدارة تختم وترجعها، وبعدها المالية تعتمدها وتظهر للطالب.</p>
     <div class="list">${invs.map(r => { const st = stOf(r); return `<div class="item"><div class="grow"><b>${esc((S.students[r.num] || {}).name || r.name)}</b> <span class="muted">${esc(r.num)}</span><div class="muted">${esc(bothDates((r.at || "").slice(0, 10)))} · ${FR_ST[r.status] || r.status}${r.status === "rejected" && r.reason ? " · " + esc(r.reason) : ""}${st && st.remaining > 0.01 && r.status !== "approved" ? ` · <span style="color:var(--abs)">عليه متبقي ${SAR(st.remaining)}</span>` : ""}</div></div>${act(r)}</div>`; }).join("") || `<span class="muted">ما فيه طلبات.</span>`}</div></div>
   <div class="card"><h2>الاستفسارات</h2><div class="list">${inq.map(r => `<div class="item" style="${r.status === "done" ? "opacity:.6" : ""}"><div class="grow"><b>${esc((S.students[r.num] || {}).name || r.name)}</b> <span class="muted">${esc(r.num)} · ${esc(bothDates((r.at || "").slice(0, 10)))}</span><div>${esc(r.text)}</div></div><a class="btn sm" style="text-decoration:none" target="_blank" rel="noopener" href="https://wa.me/${esc(r.phone)}?text=${encodeURIComponent(`السلام عليكم ${r.name}، بخصوص استفسارك للمالية في ${INST_AR}:\n`)}">واتساب</a>${r.status !== "done" && isFin ? `<button class="btn sm" data-frdone="${r.id}">تم التواصل</button>` : ""}</div>`).join("") || `<span class="muted">ما فيه استفسارات.</span>`}</div></div>`;
-  const upd = async (id, d, msg, log) => { try { await setDoc(ref("finReqs/" + id), {...d, [`${d.status || "x"}At`]: new Date().toISOString(), [`${d.status || "x"}By`]: S.adminRole}, {merge: true}); logAction(log, (all.find(r => r.id === id) || {}).name || ""); toast(msg); } catch (e) { handleWriteErr(e); } };
+  const upd = async (id, d, msg, log) => { try { await setDoc(ref("finReqs/" + id), {...d, [`${d.status || "x"}At`]: new Date().toISOString(), [`${d.status || "x"}By`]: S.adminRole}, {merge: true}); notify("fin", id); logAction(log, (all.find(r => r.id === id) || {}).name || ""); toast(msg); } catch (e) { handleWriteErr(e); } };
   el.querySelectorAll("[data-frsign]").forEach(b => b.onclick = () => {
     const r = all.find(x => x.id === b.dataset.frsign), st = stOf(r);
     if (!st || st.remaining > 0.01) return toast(st ? `ما سدّد كامل الرسوم، باقي ${SAR(st.remaining)}` : "ما له حساب مالي");
@@ -3401,7 +3498,7 @@ function finReqTab(el){
         const inv = {no: `F-${today().slice(0, 4)}-${String(n).padStart(4, "0")}`, date: today(), name: r.name || (S.students[r.num] || {}).name || "", num: r.num, program: prog ? prog.name : "", net: st.net, paid: st.paid, discount: Number(acc.discount) || 0, pays, finSig: r.finSig || "", stamp: r.stamp || ""};
         tx.set(ref("fin/invCounter"), {last: n}); tx.set(ref("finReqs/" + r.id), {status: "approved", inv, approvedAt: new Date().toISOString(), approvedBy: S.adminRole}, {merge: true});
       });
-      logAction("اعتماد فاتورة نهائية", r.name || r.num); toast("انعتمدت وظهرت للطالب");
+      notify("fin", r.id); logAction("اعتماد فاتورة نهائية", r.name || r.num); toast("انعتمدت وظهرت للطالب");
     } catch (e) { b.disabled = false; handleWriteErr(e); }
   });
 }
@@ -3641,12 +3738,23 @@ function finPayments(el){
   $("#payX").onclick = () => excelDownload(`الدفعات ${m}`, [{title: "الدفعات", rows: [[INST_AR], [`الدفعات · ${m}`], [], ["السند", "التاريخ", "الطالب", "الرقم", "المبلغ", "الطريقة", "المرجع", "الحالة"], ...list.map(p => [p.receiptNo, p.date, p.name, p.num, Number(p.amount), p.method, p.ref || "", p.void ? "ملغى" : "مستلم"]), [], ["", "", "المجموع", "", tot]], widths: [13, 12, 28, 11, 11, 14, 16, 9]}]);
 }
 function finLate(el){
-  const rows = finRows().filter(r => r.st.status === "late").sort((a, b) => b.st.overdue - a.st.overdue);
-  el.innerHTML = `<div class="card"><h2>المتأخرين عن السداد (${rows.length})</h2><p class="muted" style="margin:0">المجموع المتأخر: <b>${SAR(rows.reduce((a, r) => a + r.st.overdue, 0))}</b></p></div>
-  <div class="list">${rows.map(r => `<div class="item"><div class="grow"><div class="t">${esc(r.s.name)} <span class="muted">${esc(r.s.num)}</span></div><div class="muted">متأخر ${SAR(r.st.overdue)} · متبقي ${SAR(r.st.remaining)}</div></div>
-    ${r.acc.phone ? `<a class="btn sm gold" target="_blank" rel="noopener" href="https://wa.me/${normPhone(r.acc.phone)}?text=${encodeURIComponent(finReminder(r.s, r.st))}">تذكير واتساب</a>` : `<span class="pill">بدون جوال</span>`}
-    <button class="btn sm" data-fo="${esc(r.s.num)}">الحساب</button></div>`).join("") || `<div class="card empty">ما فيه متأخرين.</div>`}</div>`;
+  const all = finRows(), in3 = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
+  const rows = all.filter(r => r.st.status === "late").sort((a, b) => b.st.overdue - a.st.overdue);
+  const soon = all.filter(r => r.st.status === "ok" && r.st.next && r.st.next.due <= in3).sort((a, b) => a.st.next.due.localeCompare(b.st.next.due));
+  const phoneOf = r => (r.acc && r.acc.phone) || (S.stPhones || {})[r.s.num] || "";
+  const last = r => r.acc && r.acc.remindedAt ? `<span class="pill ${daysAgo(r.acc.remindedAt) < 7 ? "p" : ""}">ذُكّر ${daysAgo(r.acc.remindedAt) === 0 ? "اليوم" : `قبل ${daysAgo(r.acc.remindedAt)} يوم`}</span>` : `<span class="pill">ما ذُكّر</span>`;
+  const wa = (r, text) => phoneOf(r) ? `<a class="btn sm gold" target="_blank" rel="noopener" data-rem="${esc(r.s.num)}" href="https://wa.me/${normPhone(phoneOf(r))}?text=${encodeURIComponent(text)}">تذكير واتساب</a>` : `<span class="pill">بدون جوال</span>`;
+  const item = (r, info, text) => `<div class="item"><div class="grow"><div class="t">${esc(r.s.name)} <span class="muted">${esc(r.s.num)}</span></div><div class="muted">${info}</div></div>${last(r)}${wa(r, text)}<button class="btn sm" data-fo="${esc(r.s.num)}">الحساب</button></div>`;
+  el.innerHTML = `<div class="card"><h2>المتأخرين عن السداد (${rows.length})</h2><p class="muted" style="margin:0">المجموع المتأخر: <b>${SAR(rows.reduce((a, r) => a + r.st.overdue, 0))}</b>. زر الواتساب يفتح رسالة جاهزة باسم الطالب والمبلغ، ويتسجل تاريخ التذكير.</p></div>
+  <div class="list">${rows.map(r => item(r, `متأخر ${SAR(r.st.overdue)} · متبقي ${SAR(r.st.remaining)}`, finReminder(r.s, r.st))).join("") || `<div class="card empty">ما فيه متأخرين.</div>`}</div>
+  ${soon.length ? `<div class="card" style="margin-top:14px"><h2>أقساط تستحق خلال 3 أيام (${soon.length})</h2><p class="muted" style="margin:0">تذكير ودّي قبل الموعد.</p></div>
+  <div class="list">${soon.map(r => item(r, `${SAR(r.st.next.amount)} بتاريخ ${esc(r.st.next.due)}`, finSoonText(r.s, r.st))).join("")}</div>` : ""}`;
   el.querySelectorAll("[data-fo]").forEach(b => b.onclick = () => openFinAccount(b.dataset.fo));
+  el.querySelectorAll("[data-rem]").forEach(a => a.addEventListener("click", () => { const n = a.dataset.rem; setDoc(ref("finAccounts/" + n), {remindedAt: today()}, {merge: true}).then(() => { if (S.finAcc[n]) S.finAcc[n].remindedAt = today(); logAction("تذكير سداد واتساب", (S.students[n] || {}).name || n); }).catch(() => {}); }));
+}
+const daysAgo = d => Math.max(0, Math.round((new Date(today()) - new Date(d)) / 864e5));
+function finSoonText(s, st){
+  return `السلام عليكم ${s.name}\nالرقم الأكاديمي: ${s.num}\n\nنذكّركم بموعد القسط القادم:\n${SAR(st.next.amount)} بتاريخ ${st.next.due}\nالمتبقي الكلي: ${SAR(st.remaining)}\n\nالمالية\n${INST_AR}`;
 }
 function finSettings(el){
   const progs = S.finSet.programs || [];
@@ -4117,7 +4225,7 @@ function adminReport(el){
     const w = openPrint(); if (!w) return;
     const b = writeBatch(db), made = [];
     toIssue.forEach(x => { const code = certCode(); const c = {code, key: `${x.s.sid}_${g.id}`, num: x.s.sid, name: x.s.name, gender: x.s.gender, groupId: g.id, course: g.course, trainer: tName(g.trainerId), attPct: x.pct, date: today(), issuedBy: S.adminRole, revoked: false}; b.set(ref("certs/" + code), c); made.push(c); });
-    try { await b.commit(); made.forEach(c => S.certs[c.key] = c); logAction("إصدار شهادات حضور", `${g.course} · ${made.length}`); }
+    try { await b.commit(); made.forEach(c => { S.certs[c.key] = c; notify("cert", c.code); }); logAction("إصدار شهادات حضور", `${g.course} · ${made.length}`); }
     catch (e) { w.close(); return handleWriteErr(e); }
     const pages = []; for (const c of made) pages.push(await certPage(c));
     fillPrint(w, `شهادات حضور · ${g.course}`, pages, true);
