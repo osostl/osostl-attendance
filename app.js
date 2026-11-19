@@ -3009,15 +3009,16 @@ function openCourse(id){
 
 /* ---------- audit log tab ---------- */
 function adminLogs(el){
+  S.logLimit = S.logLimit || 300;
   if (!S.unsubLogs) {
-    S.unsubLogs = onSnapshot(query(collection(db, "logs"), orderBy("at", "desc"), limit(300)), snap => {
-      S.logs = snap.docs.map(d => d.data()); if (S.view === "admin" && S.aTab === "logs" && !busyEditing()) render();
+    S.unsubLogs = onSnapshot(query(collection(db, "logs"), orderBy("at", "desc"), limit(S.logLimit)), snap => {
+      S.logs = snap.docs.map(d => d.data()); S.logsFull = snap.size < S.logLimit; if (S.view === "admin" && S.aTab === "logs" && !busyEditing()) render();
     }, e => { console.error(e); toast("تعذّر تحميل السجل، تأكد من تحديث قواعد Firebase"); });
   }
   const fmtAt = t => { try { return t.toDate().toLocaleString("ar-SA-u-ca-gregory-nu-latn", {timeZone: TZ, dateStyle: "medium", timeStyle: "short"}); } catch { return "…"; } };
   el.innerHTML = `<div class="card"><h2>سجل العمليات</h2>
-    <p class="muted" style="margin-top:0">آخر 300 عملية: مين سوّاها، ووش، ومتى. السجل ما ينحذف ولا ينعدّل.</p>
-    <input type="text" id="lq" placeholder="ابحث باسم أو عملية أو مقرر"></div>
+    <p class="muted" style="margin-top:0">كل العمليات محفوظة: مين سوّاها، ووش، ومتى. السجل ما ينحذف ولا ينعدّل. يعرض هنا آخر ${S.logLimit} عملية، وتقدر تعرض الأقدم أو تنزّل السجل كامل.</p>
+    <div class="row"><input type="text" id="lq" class="grow" placeholder="ابحث باسم أو عملية أو مقرر"><button class="btn sm" id="lAll">تنزيل السجل كامل Excel</button></div></div>
     <div class="tbl"><table><thead><tr><th>الوقت</th><th class="nm">مين</th><th class="nm">العملية</th><th class="nm">التفاصيل</th></tr></thead><tbody id="lbody"></tbody></table></div>`;
   const draw = q => {
     q = norm(q || "");
@@ -3025,6 +3026,18 @@ function adminLogs(el){
     $("#lbody").innerHTML = rows.map(l => `<tr><td>${esc(fmtAt(l.at))}</td><td class="nm">${esc(l.who)}</td><td class="nm">${esc(l.action)}</td><td class="nm" style="white-space:normal">${esc(l.details)}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">ما فيه عمليات بعد</td></tr>`;
   };
   draw(""); $("#lq").oninput = e => draw(e.target.value);
+  if (!S.logsFull && (S.logs || []).length >= S.logLimit) el.insertAdjacentHTML("beforeend", `<div class="row" style="justify-content:center;margin-top:10px"><button class="btn" id="lMore">عرض ${300} عملية أقدم</button></div>`);
+  if ($("#lMore")) $("#lMore").onclick = () => { S.logLimit += 300; if (S.unsubLogs) { S.unsubLogs(); S.unsubLogs = null; } render(); };
+  $("#lAll").onclick = async e => {
+    e.target.disabled = true; toast("جاري تجهيز السجل…");
+    try {
+      const snap = await getDocs(query(collection(db, "logs"), orderBy("at", "desc")));
+      const rows = [["الوقت", "مين", "الصفة", "العملية", "التفاصيل"], ...snap.docs.map(d => { const l = d.data(); return [fmtAt(l.at), l.who || "", l.role || "", l.action || "", l.details || ""]; })];
+      await excelDownload(`سجل العمليات ${today()}`, [{title: "سجل العمليات", rows, widths: [22, 26, 12, 26, 60]}]);
+      logAction("تنزيل سجل العمليات", `${snap.size} عملية`);
+    } catch (x) { console.error(x); toast("تعذّر تنزيل السجل"); }
+    e.target.disabled = false;
+  };
 }
 
 async function setDisabled(coll, id, on, name){
