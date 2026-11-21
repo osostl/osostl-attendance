@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, setPersistence, browserLocalPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, doc, collection, query, where, onSnapshot, setDoc, deleteDoc, writeBatch, getDoc, getDocs, addDoc, orderBy, limit, serverTimestamp, runTransaction, getCountFromServer, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
@@ -54,6 +54,16 @@ if (configured) {
   setPersistence(auth, browserLocalPersistence).catch(() => {});
 }
 const ref = path => doc(db, ...path.split("/"));
+/* staff sessions: they end when the browser closes (login above), and after 30 minutes without any activity */
+const IDLE_MS = 30 * 60e3; let _lastAct = Date.now();
+["pointerdown", "keydown", "touchstart", "wheel"].forEach(ev => addEventListener(ev, () => { _lastAct = Date.now(); }, {passive: true, capture: true}));
+setInterval(() => {
+  if (S.view === "admin" && S.authUser && !S.room && Date.now() - _lastAct > IDLE_MS) {
+    _lastAct = Date.now(); try { sessionStorage.setItem("idleOut", "1"); } catch {} logout();
+  }
+}, 60000);
+try { if (sessionStorage.getItem("lockOut")) { sessionStorage.removeItem("lockOut"); setTimeout(() => toast("انتهت جلستك: الإدارة غيّرت رمز الحساب أو أوقفته"), 1500); } } catch {}
+try { if (sessionStorage.getItem("idleOut")) { sessionStorage.removeItem("idleOut"); setTimeout(() => toast("طلعت من البوابة تلقائياً بعد 30 دقيقة بدون نشاط"), 1500); } } catch {}
 /* sign out and wipe the cached copy, so nothing stays on a shared computer */
 async function logout(){
   try { await signOut(auth); } catch {}
@@ -207,6 +217,103 @@ function openRoom(g, tok){
     };
   }
 }
+/* ---------- staff account security (general administration) ---------- */
+function askCode(title){
+  return new Promise(done => {
+    const w = document.createElement("div"); w.className = "roomAsk";
+    w.innerHTML = `<form class="card" style="max-width:380px;width:100%;margin:0" autocomplete="off"><h2>${esc(title)}</h2><label class="f" for="rcC">رمز الإدارة العامة<input type="password" id="rcC" inputmode="numeric" required></label><div class="row" style="margin-top:10px"><button class="btn pri" type="submit">تأكيد</button><button class="btn" type="button" id="rcX">إلغاء</button></div></form>`;
+    document.body.appendChild(w); w.querySelector("#rcC").focus();
+    w.querySelector("#rcX").onclick = () => { w.remove(); done(null); };
+    w.querySelector("form").onsubmit = e => { e.preventDefault(); const c = digits(w.querySelector("#rcC").value); w.remove(); done(c); };
+  });
+}
+async function reauthAdmin(){
+  const c = await askCode("للأمان، اكتب رمزك مرة ثانية"); if (!c) return false;
+  try { await signInWithEmailAndPassword(auth, ROLE_EMAIL.admin, c); return true; } catch { toast("الرمز غير صحيح"); return false; }
+}
+async function staffSec(body){
+  const url = ((S.site || {}).pushUrl || "").replace(/\/+$/, ""); if (!url) throw new Error("no service");
+  const call = async () => { const r = await fetch(url + "/staff-security", {method: "POST", headers: {"content-type": "application/json", authorization: "Bearer " + await S.authUser.getIdToken(true)}, body: JSON.stringify(body)}); return [r, await r.json().catch(() => ({}))]; };
+  let [r, j] = await call();
+  if (r.status === 401 && j.error === "reauth") { if (!await reauthAdmin()) throw new Error("cancel"); [r, j] = await call(); }
+  if (!r.ok) throw new Error(j.error || "failed");
+  return j;
+}
+function showCode(role, code, self){
+  const w = document.createElement("div"); w.className = "roomAsk";
+  w.innerHTML = `<div class="card" style="max-width:400px;width:100%;margin:0;text-align:center"><h2>${self ? "رمزك الجديد" : "الرمز الجديد: " + esc(ROLES[role])}</h2><div dir="ltr" style="font-size:30px;font-weight:700;letter-spacing:4px;margin:12px 0">${esc(code)}</div><p class="muted">${self ? "احفظه الحين، ما بيظهر مرة ثانية. الرمز القديم وقف." : "أرسله للموظف بطريقة آمنة (مكالمة أو رسالة مباشرة). ما بيظهر مرة ثانية."}</p><div class="row" style="justify-content:center"><button class="btn pri" id="scC">نسخ</button><button class="btn" id="scX">إغلاق</button></div></div>`;
+  document.body.appendChild(w);
+  w.querySelector("#scC").onclick = () => navigator.clipboard.writeText(code).then(() => toast("انتسخ")).catch(() => {});
+  w.querySelector("#scX").onclick = () => w.remove();
+}
+/* after the general administration's own code changes, sign straight back in with it */
+async function reloginAdmin(code){
+  S._selfRotate = true;
+  await new Promise(r => setTimeout(r, 1500));
+  try { await signInWithEmailAndPassword(auth, ROLE_EMAIL.admin, code); } catch (e) { console.error(e); }
+  setTimeout(() => { S._selfRotate = false; }, 4000);
+}
+function secCard(){
+  const st = S._secSt, fmt = ms => ms ? new Date(ms).toLocaleString("ar-SA-u-ca-gregory", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit"}) : "—";
+  const rows = st ? Object.entries(st.roles).map(([r, x]) => `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:180px"><div class="t">${esc(ROLES[r])}</div><div class="muted">${!x.exists ? "الحساب مو موجود" : `آخر دخول: ${esc(fmt(x.lastLogin))}${x.lockedAt ? ` · آخر تغيير أمان: ${esc(fmt(x.lockedAt * 1000))}` : ""}`}</div></div>
+    ${x.exists ? `<span class="pill ${x.disabled ? "a" : "p"}">${x.disabled ? "موقوف" : "مفعّل"}</span><button class="btn sm" data-snew="${r}">رمز جديد</button>${r === "admin" ? "" : x.disabled ? `<button class="btn sm" data-sen="${r}">تفعيل</button>` : `<button class="btn sm danger" data-sdis="${r}">إيقاف</button>`}` : ""}</div>`).join("") : `<div class="muted">جاري التحميل…</div>`;
+  return `<div class="card" id="secCard"><h2>أمان حسابات الإدارات</h2>
+    <p class="muted" style="margin-top:0">لو شكّيت إن أحد دخل حساب إدارة بدون إذن، اضغط «رمز جديد» أو «إيقاف». الرمز القديم يوقف، وكل من كان داخل بالحساب يطلع فوراً من كل الأجهزة.</p>
+    <div class="list">${rows}</div>
+    <button class="btn danger" id="secAll" style="margin-top:10px;width:100%">طوارئ: إيقاف كل حسابات الإدارات</button>
+    <p class="muted" style="margin:6px 0 0">يوقف حسابات الشؤون الأكاديمية والمالية والجهة الرقابية، ويغيّر رمز الإدارة العامة. وبعدين ترجّع كل حساب بـ «تفعيل» و«رمز جديد».</p></div>`;
+}
+function bindSecCard(el){
+  if (!$("#secCard")) return;
+  const reload = () => { S._secSt = null; S._secAt = 0; render(); };
+  if (!S._secSt && !S._secBusy && Date.now() - (S._secAt || 0) > 60000) {
+    S._secBusy = true; S._secAt = Date.now();
+    staffSec({action: "status"}).then(j => { S._secSt = j; }).catch(e => { console.error(e); S._secSt = {roles: {}}; toast("تعذّر قراءة حالة الحسابات"); }).finally(() => { S._secBusy = false; if (S.aTab === "system" && !busyEditing()) render(); });
+  }
+  const act = async (btn, body, label, after) => {
+    if (!btn.dataset.sure) { btn.dataset.sure = 1; btn.textContent = "متأكد؟"; return; }
+    btn.disabled = true;
+    try { const j = await staffSec(body); logAction("أمان الحسابات: " + label, ROLES[body.role] || "الكل"); await after(j); reload(); }
+    catch (e) { if (e.message !== "cancel") toast("ما تم التنفيذ: " + (e.message === "cannot stop own account" ? "ما تقدر توقف حساب الإدارة العامة" : "حاول مرة ثانية")); btn.disabled = false; }
+  };
+  el.querySelectorAll("[data-snew]").forEach(b => b.onclick = () => { const r = b.dataset.snew; act(b, {action: "newcode", role: r}, "رمز جديد", async j => { if (r === "admin") { await reloginAdmin(j.code); showCode(r, j.code, true); } else showCode(r, j.code); }); });
+  el.querySelectorAll("[data-sdis]").forEach(b => b.onclick = () => act(b, {action: "disable", role: b.dataset.sdis}, "إيقاف حساب", async () => toast("انوقف الحساب، وطلع كل من كان داخل فيه")));
+  el.querySelectorAll("[data-sen]").forEach(b => b.onclick = () => act(b, {action: "enable", role: b.dataset.sen}, "تفعيل حساب", async () => toast("انفعّل الحساب. يفضّل تعطيه رمز جديد")));
+  const all = $("#secAll");
+  if (all) all.onclick = async () => {
+    const typed = prompt("للتأكيد اكتب: إيقاف"); if ((typed || "").trim() !== "إيقاف") return;
+    all.disabled = true; all.dataset.sure = 1;
+    act(all, {action: "lockall"}, "إيقاف طوارئ لكل الحسابات", async j => { await reloginAdmin(j.code); showCode("admin", j.code, true); toast("انوقفت كل حسابات الإدارات"); });
+  };
+}
+/* ---------- recordings on the classroom server ---------- */
+const fmtSize = n => !n ? "" : n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(1) + " جيجا" : Math.max(1, Math.round(n / 1024 ** 2)) + " ميغا";
+async function recTicket(body){
+  const url = ((S.site || {}).pushUrl || "").replace(/\/+$/, ""); if (!url) throw new Error("no service");
+  const r = await fetch(url + "/rec-ticket", {method: "POST", headers: {"content-type": "application/json", authorization: "Bearer " + await S.authUser.getIdToken()}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "ticket"); return j;
+}
+function recUpload(g, file, onPct){
+  return recTicket({op: "up", gid: g.id}).then(t => new Promise((ok, no) => {
+    const x = new XMLHttpRequest(); x.open("PUT", t.url);
+    x.upload.onprogress = e => { if (e.lengthComputable) onPct(Math.floor(e.loaded / e.total * 100)); };
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch {} x.status === 200 ? ok({rid: t.rid}) : no(new Error(j.error || "upload " + x.status)); };
+    x.onerror = () => no(new Error("network"));
+    x.send(file);
+  }));
+}
+async function recDelete(g, r){ const t = await recTicket({op: "del", gid: g.id, rid: r.rid}); const x = await fetch(t.url, {method: "POST"}); if (!x.ok && x.status !== 404) throw new Error("del " + x.status); logAction("حذف تسجيل محاضرة", `${g.course} · ${r.title}`); }
+async function playRec(g, r){
+  if (!r) return;
+  if (!r.rid) { if (validLink(r.url)) window.open(r.url, "_blank", "noopener"); return; }
+  let t; try { t = await recTicket({op: "get", gid: g.id, rid: r.rid}); } catch (e) { console.error(e); return toast("تعذّر فتح التسجيل"); }
+  const w = document.createElement("div"); w.className = "roomAsk";
+  w.innerHTML = `<div class="card" style="max-width:960px;width:100%;margin:0"><div class="row" style="justify-content:space-between;margin-bottom:8px"><b>${esc(g.course || "")} · ${esc(r.title)}</b><button class="btn sm" id="rpX">إغلاق</button></div><video controls autoplay playsinline controlslist="nodownload" style="width:100%;max-height:75vh;background:#000;border-radius:8px"></video></div>`;
+  document.body.appendChild(w);
+  const v = w.querySelector("video"); v.src = t.url; v.oncontextmenu = e => e.preventDefault();
+  v.onerror = () => toast("تعذّر تشغيل التسجيل");
+  w.querySelector("#rpX").onclick = () => { v.pause(); v.removeAttribute("src"); w.remove(); };
+}
 const endLive = g => setDoc(ref("live/" + g.id), {gid: g.id, on: false, mode: "osos", at: new Date().toISOString(), by: S.me || S.adminRole || "", course: g.course || "", endedAt: new Date().toISOString()})
   .then(() => logAction("إنهاء محاضرة", g.course)).catch(handleWriteErr);
 function closeRoom(){
@@ -217,9 +324,12 @@ function closeRoom(){
 /* administration and academic affairs: every lecture running now, to watch, move or end */
 function liveTab(el){
   if (!S._liveSub) S._liveSub = onSnapshot(collection(db, "live"), x => { S.lives = x.docs.map(d => d.data()); if (S.aTab === "live" && !busyEditing()) render(); }, () => {});
+  if (S._joinDay !== today()) { if (S._joinSub) S._joinSub(); S._joinDay = today(); S._joinSub = onSnapshot(query(collection(db, "joins"), where("date", "==", today())), x => { S.joinsToday = x.docs.map(d => d.data()); if (S.aTab === "live" && !busyEditing()) render(); }, () => {}); }
+  const joined = gid => (S.joinsToday || []).filter(j => j.groupId === gid).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
   const list = (S.lives || []).filter(liveOn).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
-  el.innerHTML = `<div class="card"><h2>المحاضرات الآن (${list.length})</h2><p class="muted" style="margin:0">تدخل كمشرف بالكاميرا والمايك مطفيين، وتقدر تنقل المحاضرة لـ Teams أو تنهيها. وداخل القاعة تقدر تكتم أو تطرد أي مشارك.</p></div>
-  <div class="list">${list.map(l => { const g = S.groups[l.gid] || {}; return `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(g.course || l.course || l.gid)}</div><div class="muted">${esc(tName(g.trainerId || ""))} · بدأت ${esc(fmtTime(new Date(l.at).toTimeString().slice(0, 5)))} · ${l.mode === "teams" ? "على Teams" : "قاعة المعهد"}</div></div>
+  el.innerHTML = `<div class="card"><h2>المحاضرات الآن (${list.length})</h2><p class="muted" style="margin:0">تشوف مين دخل من الطلاب بدون ما تدخل القاعة. ولو دخلت كمشرف، تدخل والكاميرا والمايك مطفيين، واسمك يظهر في قائمة المشاركين «الإدارة». وتقدر تنقل المحاضرة لـ Teams أو تنهيها، وداخل القاعة تكتم أو تطرد أي مشارك.</p></div>
+  <div class="list">${list.map(l => { const g = S.groups[l.gid] || {}; return `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(g.course || l.course || l.gid)}</div><div class="muted">${esc(tName(g.trainerId || ""))} · بدأت ${esc(fmtTime(new Date(l.at).toTimeString().slice(0, 5)))} · ${l.mode === "teams" ? "على Teams" : "قاعة المعهد"}</div>
+    ${(js => js.length ? `<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">دخل ${js.length} من ${(g.memberNums || []).length} طالب</summary><div class="muted" style="margin-top:4px">${js.map(j => `${esc((S.students[j.num] || {}).name || j.num)} (${esc(fmtTime(j.time))})`).join("، ")}</div></details>` : `<div class="muted">ما دخل أحد من الطلاب للحين</div>`)(joined(l.gid))}</div>
     ${l.mode === "osos" ? `<button class="btn sm pri" data-lvw="${esc(l.gid)}">دخول كمشرف</button>` : validLink(g.meetLink) ? `<a class="btn sm" style="text-decoration:none" href="${esc(g.meetLink)}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
     ${RO() ? "" : `${l.mode === "osos" ? `<button class="btn sm" data-lvt="${esc(l.gid)}">نقل لـ Teams</button>` : ""}<button class="btn sm danger" data-lve="${esc(l.gid)}">إنهاء</button>`}</div>`; }).join("") || `<div class="card empty">ما فيه محاضرات شغالة الحين.</div>`}</div>`;
   el.querySelectorAll("[data-lvw]").forEach(b => b.onclick = async () => {
@@ -349,6 +459,13 @@ function startData(){
   S.subs.push(onSnapshot(collection(db, "grades"), snap => { S.grades = {}; snap.docs.forEach(d => S.grades[d.id] = d.data()); afterData(); }, () => {}));
   if (S.role === "admin") {
     S.subs.push(onSnapshot(ref("public/disabled"), snap => { S.disabled = (snap.exists() && snap.data().list) || {}; afterData(); }, () => {}));
+    // emergency lock: a session that signed in before its role's lock time leaves at once
+    S.subs.push(onSnapshot(ref("public/staffLock"), async snap => {
+      if (S._selfRotate || !S.authUser) return;
+      const t = (snap.exists() && snap.data()[S.adminRole]) || 0; if (!t) return;
+      let at = 0; try { at = Number((await S.authUser.getIdTokenResult()).claims.auth_time || 0); } catch {}
+      if (t >= at) { try { sessionStorage.setItem("lockOut", "1"); } catch {} logout(); }
+    }, () => {}));
     if (!RO()) S.subs.push(onSnapshot(collection(db, "memos"), snap => { S.memos = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     if (!FIN()) S.subs.push(onSnapshot(collection(db, "acReqs"), snap => { S.aReqs = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     if (!FIN()) S.subs.push(onSnapshot(collection(db, "waivers"), snap => { S.waivers = {}; snap.docs.forEach(d => S.waivers[d.id] = d.data()); afterData(); }, () => {}));
@@ -845,7 +962,7 @@ function renderAdminLogin(app){
   app.innerHTML = loginCard("دخول الشؤون المالية والأكاديمية", `
     <label class="f" for="ar">الصفة<select id="ar">${Object.entries(ROLES).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
     <label class="f" for="ac">الرمز<input type="password" id="ac" inputmode="numeric" required></label>`);
-  $("#lf").onsubmit = e => { e.preventDefault(); const email = ROLE_EMAIL[$("#ar").value], code = digits($("#ac").value); doLogin(() => signInWithEmailAndPassword(auth, email, code), "adminLogin"); };
+  $("#lf").onsubmit = e => { e.preventDefault(); const email = ROLE_EMAIL[$("#ar").value], code = digits($("#ac").value); doLogin(async () => { await setPersistence(auth, browserSessionPersistence).catch(() => {}); return signInWithEmailAndPassword(auth, email, code); }, "adminLogin"); };
 }
 function renderStudentLogin(app){
   app.innerHTML = loginCard("دخول الطلاب", `
@@ -936,7 +1053,7 @@ function renderStudent(app){
           <div class="muted" style="margin-top:4px">الحضور: ${c.rate === null ? "ما بدأ التحضير" : `${c.pres} من ${c.sessions} محاضرة (${c.rate}%)`}</div>
           ${c.rate === null ? "" : `<span class="bar" style="display:block;margin-top:6px;max-width:220px"><i style="width:${c.rate}%"></i></span>
           <div class="muted" style="margin-top:6px">الغياب: ${c.ab.a} (${c.ab.absPct}%) ${levelPill(c.ab)}${c.ab.remaining !== null ? ` · باقي لك ${c.ab.remaining} غياب قبل الحرمان` : ""}</div>`}
-          ${(c.g.recordings || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${c.g.recordings.length})</summary><div class="list" style="margin-top:6px">${c.g.recordings.filter(r => validLink(r.url)).map(r => `<a class="item" style="padding:8px 10px;text-decoration:none;color:inherit" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></a>`).join("")}</div></details>` : ""}
+          ${(c.g.recordings || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${c.g.recordings.length})</summary><div class="list" style="margin-top:6px">${c.g.recordings.map((r, i) => r.rid ? `<button class="item" style="padding:8px 10px;width:100%;text-align:start;background:none;border:0;cursor:pointer;color:inherit" data-splay="${esc(c.g.id)}|${i}"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></button>` : validLink(r.url) ? `<a class="item" style="padding:8px 10px;text-decoration:none;color:inherit" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></a>` : "").join("")}</div></details>` : ""}
           ${c.g.meetLink || MEET() ? `<div style="margin-top:10px"><button class="btn sm ${c.live ? "gold" : ""}" data-join="${esc(c.g.id)}">${c.live ? "الآن · " : ""}دخول المحاضرة${MEET() ? "" : " " + meetLabel(c.g.meetLink)}</button>${c.live ? ` <span class="muted">${fmtTime(c.live.from)} – ${fmtTime(c.live.to)}</span>` : ""}</div>` : ""}
         </div>
         <div style="text-align:center;min-width:92px">
@@ -949,6 +1066,7 @@ function renderStudent(app){
   app.querySelectorAll("[data-cert]").forEach(b => b.onclick = () => { const c = S.myCerts.find(x => x.code === b.dataset.cert); if (c) printCerts([c]); });
   app.querySelector(".card").insertAdjacentHTML("afterend", studentTabs()); bindStudentTabs(app);
   app.querySelectorAll("[data-join]").forEach(b => b.onclick = () => { const g = S.groups[b.dataset.join]; if (g) joinLecture(g, b); });
+  app.querySelectorAll("[data-splay]").forEach(b => b.onclick = () => { const [gid, i] = b.dataset.splay.split("|"), g = S.groups[gid]; if (g) playRec(g, (g.recordings || [])[Number(i)]); });
 }
 
 function studentAtt(el){
@@ -1178,7 +1296,16 @@ function renderTrainer(app){
       ${validLink(g.meetLink) ? `<a class="btn sm pri" href="${esc(g.meetLink.trim())}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
     </div>
     <details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${(g.recordings || []).length})</summary>
-      <div class="list" style="margin-top:8px">${(g.recordings || []).map((r, i) => `<div class="item" style="padding:8px 10px"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><a class="btn sm" href="${esc(validLink(r.url) ? r.url : "#")}" target="_blank" rel="noopener">فتح</a><button class="btn sm danger" data-rrec="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه تسجيلات</span>`}</div>
+      <div class="list" style="margin-top:8px">${(g.recordings || []).map((r, i) => `<div class="item" style="padding:8px 10px"><span class="grow">${dH(r.date)} · ${esc(r.title)}${r.rid ? ` <span class="muted">· ${esc(fmtSize(r.size))}</span>` : ""}</span>${r.rid ? `<button class="btn sm" data-rplay="${i}">تشغيل</button>` : `<a class="btn sm" href="${esc(validLink(r.url) ? r.url : "#")}" target="_blank" rel="noopener">فتح</a>`}<button class="btn sm danger" data-rrec="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه تسجيلات</span>`}</div>
+      ${MEET() && (S.site || {}).pushUrl ? `<div class="notice" style="margin:8px 0 0">سجّل المحاضرة من قائمة القاعة (⋯ ← تسجيل)، والملف ينحفظ على جهازك. بعدها ارفعه هنا ويظهر لطلاب المقرر بس.</div>
+      <div class="row" style="margin-top:8px">
+        <input type="date" id="rfD" value="${today()}" style="width:150px">
+        <input type="text" id="rfT" class="grow" placeholder="عنوان المحاضرة">
+        <input type="file" id="rfF" accept="video/webm,video/mp4,.webm,.mp4" class="grow">
+        <button class="btn sm pri" id="rfUp">رفع التسجيل</button>
+      </div>
+      <div id="rfP" class="muted" style="margin-top:6px"></div>
+      <p class="muted" style="margin:10px 0 0">أو أضف رابط تسجيل من مكان ثاني:</p>` : ""}
       <div class="row" style="margin-top:8px">
         <input type="date" id="recD" value="${today()}" style="width:150px">
         <input type="text" id="recT" class="grow" placeholder="عنوان المحاضرة">
@@ -1227,7 +1354,24 @@ function renderTrainer(app){
     if (!validLink(r.url)) return toast("رابط التسجيل لازم يبدأ بـ https://");
     if (await saveRecs([...(g.recordings || []), r].sort((a, b) => b.date.localeCompare(a.date)))) toast("انضاف التسجيل، والطلاب يشوفونه الحين");
   };
-  document.querySelectorAll("[data-rrec]").forEach(b => b.onclick = () => { const l = [...(g.recordings || [])]; l.splice(Number(b.dataset.rrec), 1); saveRecs(l); });
+  document.querySelectorAll("[data-rrec]").forEach(b => b.onclick = async () => {
+    const i = Number(b.dataset.rrec), r = (g.recordings || [])[i]; if (!r) return;
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; }
+    if (r.rid) { b.disabled = true; try { await recDelete(g, r); } catch (e) { console.error(e); b.disabled = false; return toast("تعذّر حذف الملف من السيرفر"); } }
+    const l = [...(g.recordings || [])]; l.splice(i, 1); saveRecs(l);
+  });
+  document.querySelectorAll("[data-rplay]").forEach(b => b.onclick = () => playRec(g, (g.recordings || [])[Number(b.dataset.rplay)]));
+  if ($("#rfUp")) $("#rfUp").onclick = async e => {
+    const f = $("#rfF").files[0]; if (!f) return toast("اختر ملف التسجيل");
+    if (f.size > 4 * 1024 ** 3) return toast("الملف أكبر من 4 جيجا");
+    const btn = e.target; btn.disabled = true;
+    try {
+      const r = await recUpload(g, f, pct => { $("#rfP").textContent = `جاري الرفع… ${pct}% (لا تقفل الصفحة)`; });
+      const item = {date: $("#rfD").value || today(), title: $("#rfT").value.trim() || "محاضرة", rid: r.rid, size: f.size, by: S.me || S.adminRole || ""};
+      if (await saveRecs([...(g.recordings || []), item].sort((a, b) => b.date.localeCompare(a.date)))) toast("انرفع التسجيل، وطلاب المقرر يشوفونه الحين");
+    } catch (x) { console.error(x); $("#rfP").textContent = ""; toast(x.message === "full" ? "مساحة السيرفر ما تكفي، كلم الإدارة" : "تعذّر رفع التسجيل، حاول مرة ثانية"); }
+    finally { btn.disabled = false; }
+  };
   if ($("#startLec")) $("#startLec").onclick = e => startLecture(g, e.target);
   $("#mlSave").onclick = async () => {
     const v = $("#mlink").value.trim();
@@ -2426,11 +2570,15 @@ function adminSystem(el){
     <label class="f" for="vapK">مفتاح Web Push (من Firebase: إعدادات المشروع ← Cloud Messaging ← Web Push certificates)<input type="text" id="vapK" dir="ltr" value="${esc((S.site || {}).vapid || "")}" placeholder="BKx…"></label>
     <label class="f" for="pushU" style="margin-top:8px">رابط خدمة الإشعارات (Cloudflare)<input type="url" id="pushU" dir="ltr" value="${esc((S.site || {}).pushUrl || "")}" placeholder="https://osos-push.….workers.dev"></label>
     <div class="row" style="margin-top:8px"><button class="btn pri sm" id="vapSave">حفظ</button>${(S.site || {}).vapid ? `<button class="btn sm" id="pushTest">إرسال إشعار تجريبي لي</button>` : ""}</div></div>` : ""}
+  ${S.adminRole === "admin" && (S.site || {}).pushUrl ? secCard() : ""}
   ${S.adminRole === "admin" ? `<div class="card"><h2>القاعة الافتراضية</h2>
     <p class="muted" style="margin-top:0">محاضرات عن بُعد داخل البوابة على سيرفر المعهد. لو القاعة ما ردّت أو كان عليها ضغط، المحاضرة تنفتح على رابط Teams حق المقرر.</p>
     <label class="f" for="mtD">عنوان القاعة<input type="text" id="mtD" dir="ltr" value="${esc((S.site || {}).meetDomain || "")}" placeholder="meet.osustl.com"></label>
     <label class="f" for="mtM" style="margin-top:8px">أقصى عدد مشاركين بنفس الوقت قبل التحويل لـ Teams<input type="number" id="mtM" min="20" max="2000" value="${esc(String((S.site || {}).meetMax || 180))}"></label>
     <label class="row" for="mtT" style="gap:8px;cursor:pointer;margin-top:8px"><input type="checkbox" id="mtT" ${(S.site || {}).meetForceTeams ? "checked" : ""}> كل المحاضرات على Teams (للطوارئ أو صيانة السيرفر)</label>
+    <label class="f" for="mtE" style="margin-top:8px">نهاية الفصل التدريبي الحالي (تسجيلاته تنحذف تلقائياً بعد شهر منه)<input type="date" id="mtE" value="${esc((S.site || {}).recEnd || "")}"></label>
+    ${(S.site || {}).recPurged ? `<p class="muted" style="margin:6px 0 0">آخر حذف تلقائي: تسجيلات الفصل اللي انتهى ${esc((S.site || {}).recPurged)}.</p>` : ""}
+    <div id="mtDisk" class="muted" style="margin-top:8px"></div>
     <div class="row" style="margin-top:8px"><button class="btn pri sm" id="mtSave">حفظ</button></div></div>` : ""}
   <div class="card"><h2>الشهادات والمالية</h2>
     <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
@@ -2500,10 +2648,17 @@ function adminSystem(el){
   if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
   if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
   bindSigCards(el);
+  bindSecCard(el);
+  if ($("#mtDisk") && MEET() && (S.site || {}).pushUrl) {
+    const show = d => { const box = $("#mtDisk"); if (!box) return; const used = d.total - d.free, pct = Math.round(used / d.total * 100);
+      box.innerHTML = `مساحة سيرفر القاعة: <b>${fmtSize(used)}</b> مستخدمة من ${fmtSize(d.total)} (${pct}%) · التسجيلات ${d.files} ملف بحجم ${fmtSize(d.rec) || "0"}${pct >= 85 ? ` <span class="pill a">المساحة قربت تخلص</span>` : ""}`; };
+    if (S._disk && Date.now() - S._disk.at < 300000) show(S._disk.d);
+    else recTicket({op: "stats"}).then(t => fetch(t.url)).then(r => r.json()).then(d => { if (d && d.total) { S._disk = {at: Date.now(), d}; show(d); } }).catch(() => { const b = $("#mtDisk"); if (b) b.textContent = "مساحة سيرفر القاعة: ما قدرت أقرأها (تأكد إن خدمة التسجيلات مركّبة)."; });
+  }
   if ($("#mtSave")) $("#mtSave").onclick = () => {
     const d = $("#mtD").value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
     if (d && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d)) return toast("العنوان غير صحيح، مثال: meet.osustl.com");
-    saveSite({meetDomain: d, meetMax: Math.max(20, Math.round(Number($("#mtM").value) || 180)), meetForceTeams: $("#mtT").checked}, "إعدادات القاعة الافتراضية");
+    saveSite({meetDomain: d, meetMax: Math.max(20, Math.round(Number($("#mtM").value) || 180)), meetForceTeams: $("#mtT").checked, recEnd: $("#mtE").value || ""}, "إعدادات القاعة الافتراضية");
   };
   if ($("#vapSave")) $("#vapSave").onclick = () => { const v = $("#vapK").value.trim(); if (v && !/^[A-Za-z0-9_-]{60,120}$/.test(v)) return toast("المفتاح غير صحيح، انسخه كامل"); const u = $("#pushU").value.trim().replace(/\/+$/, ""); if (u && !/^https:\/\/[\w.-]+(\/[\w./-]*)?$/.test(u)) return toast("الرابط غير صحيح، لازم يبدأ بـ https://"); saveSite({vapid: v, pushUrl: u, portalUrl: SITE()}, "إعدادات الإشعارات"); };
   if ($("#pushTest")) $("#pushTest").onclick = async () => { if (!pushOn()) { await enablePush(false); if (!pushOn()) return; } if (!(S.site || {}).pushUrl) return toast("حط رابط خدمة الإشعارات أول واحفظه"); try { const r = await notifyNow("test", "me"); toast(r && r.sent ? "انرسل، المفروض يوصلك خلال ثواني" : r ? "الخدمة شغّالة بس ما لقت جهاز مفعّل باسمك. فعّل الإشعارات من الزر فوق" : "ما قدرت أوصل لخدمة الإشعارات. تأكد من الرابط"); } catch { toast("ما قدرت أوصل لخدمة الإشعارات. تأكد من الرابط"); } };
