@@ -189,6 +189,7 @@ function startData(){
     S.subs.push(onSnapshot(query(collection(db, "warnings"), where("num", "==", S.myNum)), snap => { S.myWarn = snap.docs.map(d => d.data()); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(ref("finAccounts/" + S.myNum), snap => { S.myFin = snap.exists() ? snap.data() : null; if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "payments"), where("num", "==", S.myNum)), snap => { S.myPay = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
+    S.subs.push(onSnapshot(query(collection(db, "acReqs"), where("num", "==", S.myNum)), snap => { S.myAReq = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "finReqs"), where("num", "==", S.myNum)), snap => { S.myFReq = snap.docs.map(d => ({id: d.id, ...d.data()})); if (!busyEditing()) render(); }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "idcards"), where("num", "==", S.myNum)), snap => { const t = snap.docs[0] ? snap.docs[0].id : null; if (t !== S.myIdTok) { S.myIdTok = t; if (S.sTab === "card" && !busyEditing()) render(); } }, () => {}));
     S.subs.push(onSnapshot(query(collection(db, "certs"), where("num", "==", S.myNum)), snap => { S.myCerts = snap.docs.map(d => d.data()).filter(c => !c.revoked); if (!busyEditing()) render(); }, () => {}));
@@ -202,6 +203,8 @@ function startData(){
   S.subs.push(onSnapshot(collection(db, "grades"), snap => { S.grades = {}; snap.docs.forEach(d => S.grades[d.id] = d.data()); afterData(); }, () => {}));
   if (S.role === "admin") {
     S.subs.push(onSnapshot(ref("public/disabled"), snap => { S.disabled = (snap.exists() && snap.data().list) || {}; afterData(); }, () => {}));
+    if (!RO()) S.subs.push(onSnapshot(collection(db, "memos"), snap => { S.memos = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
+    if (!FIN()) S.subs.push(onSnapshot(collection(db, "acReqs"), snap => { S.aReqs = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     if (!FIN()) S.subs.push(onSnapshot(collection(db, "waivers"), snap => { S.waivers = {}; snap.docs.forEach(d => S.waivers[d.id] = d.data()); afterData(); }, () => {}));
     if (SEES_FIN()) startFinance();
     if (!RO()) S.subs.push(onSnapshot(collection(db, "finClear"), snap => { S.finClear = {}; snap.docs.forEach(d => S.finClear[d.id] = d.data()); S.finClearLoaded = true; afterData(); }, () => {}));
@@ -243,7 +246,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","vapK","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["fqS","arT","arP","mmT","mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","vapK","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -736,7 +739,7 @@ const EXC_ST = {pending: "قيد المراجعة", accepted: "مقبول", reje
 const EXC_PILL = {pending: "l", accepted: "p", rejected: "a"};
 function studentTabs(){
   const open = Object.values(S.groups).filter(g => g.evalOpen && !(S.myEvals || []).some(e => e.groupId === g.id)).length;
-  const tabs = [["home", "الرئيسية"], ["card", "بطاقتي"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ["freq", "طلبات المالية" + ((S.myFReq || []).some(r => r.type === "invoice" && r.status === "approved" && !r.seen) ? " (1)" : "")], ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
+  const tabs = [["home", "الرئيسية"], ["card", "بطاقتي"], ["att", "حضوري"], ["exc", "الأعذار"], ["warn", "الإنذارات" + ((S.myWarn || []).length ? ` (${S.myWarn.length})` : "")], ["eval", "التقييم" + (open ? ` (${open})` : "")], ["areq", "طلبات الأكاديمية" + ((S.myAReq || []).some(r => r.status === "done" && r.reply && !r.seen) ? " (1)" : "")], ["freq", "طلبات المالية" + ((S.myFReq || []).some(r => r.type === "invoice" && r.status === "approved" && !r.seen) ? " (1)" : "")], ...(S.survey && S.survey.open ? [["survey", "الاستبيان" + (S.surveyDone === S.survey.id ? "" : " (1)")]] : [])];
   return `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${(S.sTab || "home") === k ? "on" : ""}" data-stab="${k}">${v}</button>`).join("")}</div></div>`;
 }
 function bindStudentTabs(app){ app.querySelectorAll("[data-stab]").forEach(b => b.onclick = () => { S.sTab = b.dataset.stab; render(); window.scrollTo(0, 0); }); }
@@ -750,7 +753,7 @@ function myCourseStats(){
 function renderStudent(app){
   const st = S.myStudent;
   if (!st) { app.innerHTML = `<div class="notice err">ما لقينا سجلك. تواصل مع الشؤون الأكاديمية.</div>`; return; }
-  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({card: studentCard, att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFinReq, freq: studentFinReq, survey: studentSurvey})[S.sTab]($("#sb")); return; }
+  if ((S.sTab || "home") !== "home") { app.innerHTML = studentTabs() + `<div id="sb"></div>`; bindStudentTabs(app); ({card: studentCard, att: studentAtt, exc: studentExc, warn: studentWarn, eval: studentEval, fin: studentFinReq, areq: studentAcReq, freq: studentFinReq, survey: studentSurvey})[S.sTab]($("#sb")); return; }
   const gs = Object.values(S.groups).sort((a,b) => (a.course||"").localeCompare(b.course||"","ar"));
   const res = {}; S.myResults.forEach(r => res[r.groupId] = r);
   const cards = gs.map(g => {
@@ -868,7 +871,7 @@ function studentExc(el){
     try {
       let img = "";
       if ($("#exI").files[0]) { $("#exB").textContent = "جاري ضغط الصورة…"; img = await compressImage($("#exI").files[0]); }
-      await setDoc(ref(`excuses/${S.myNum}_${gid}_${date}`), {num: S.myNum, name: S.myStudent.name, groupId: gid, course: g.course, date, reason: reason.slice(0, 500), img, status: "pending", note: "", at: new Date().toISOString()});
+      await setDoc(ref(`excuses/${S.myNum}_${gid}_${date}`), {num: S.myNum, name: S.myStudent.name, groupId: gid, course: g.course, date, reason: reason.slice(0, 500), img, status: "pending", note: "", at: new Date().toISOString()}); notify("excuse", `${S.myNum}_${gid}_${date}`);
       toast("انرسل العذر للشؤون الأكاديمية");
     } catch (er) { console.error(er); toast(er.message === "too-big" ? "الصورة كبيرة، جرّب صورة أوضح بحجم أصغر" : "تعذّر إرسال العذر"); }
     S._busy = false; render();
@@ -1196,7 +1199,7 @@ function bindGrades(g, who){
     const d = base("submitted"); if (!d) return;
     if (!allFilled(d)) return toast("ارصد درجات كل الطلاب قبل الرفع");
     d.submittedAt = new Date().toISOString();
-    if (await put(d)) { toast("ارتفعت الدرجات للشؤون الأكاديمية"); render(); }
+    if (await put(d)) { notify("gradesub", g.id); toast("ارتفعت الدرجات للشؤون الأكاديمية"); render(); }
   };
   if ($("#gReturn")) $("#gReturn").onclick = async () => {
     const d = base("returned"); if (!d) return; d.note = $("#gnote").value.trim();
@@ -1560,14 +1563,14 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
-  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["areqs","طلبات الطلاب" + ((S.aReqs || []).some(r => r.status === "new") ? ` (${S.aReqs.filter(r => r.status === "new").length})` : "")],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["memos","المراسلات" + memoBadge()],["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${backupNag()}${absNag()}${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "follow" && S.allAtt && ["academic", "admin"].includes(S.adminRole) ? (n => n ? ` (${n})` : "")(absAlerts().alerts.filter(alertWaiting).length) : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
   if ($("#nagAbs")) $("#nagAbs").onclick = () => { S.aTab = "follow"; render(); };
   if ($("#nagBk")) $("#nagBk").onclick = async e => { e.target.disabled = true; try { await backupAll(); toast("نزلت النسخة الاحتياطية"); render(); } catch (x) { console.error(x); toast("تعذّر أخذ النسخة"); e.target.disabled = false; } };
-  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
+  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, areqs: adminAcReqs, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, memos: memosTab, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
 }
 
 function adminDash(el){
@@ -2539,6 +2542,108 @@ function adminFollow(el){
 }
 
 /* ---------- excuses tab ---------- */
+/* ---------- internal messages between general administration, academic affairs and finance ---------- */
+const MEMO_ROLES = ["admin", "academic", "finance"];
+const memoUnread = () => (S.memos || []).filter(m => m.to === S.adminRole && !m.readAt);
+const memoBadge = () => { const n = memoUnread().length; return n ? ` (${n})` : ""; };
+function memosTab(el){
+  const me = S.adminRole, others = MEMO_ROLES.filter(r => r !== me);
+  const mine = (S.memos || []).filter(m => m.to === me || m.from === me).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const f = S.memoBox || "in", list = mine.filter(m => f === "in" ? m.to === me : m.from === me);
+  const re = S.memoReply ? mine.find(m => m.id === S.memoReply) : null;
+  el.innerHTML = `<div class="card"><h2>رسالة جديدة</h2>
+    ${re ? `<div class="notice" style="margin:0 0 8px">رد على: ${esc(re.text.slice(0, 80))}${re.text.length > 80 ? "…" : ""} <button class="btn sm" id="mmNoRe">إلغاء</button></div>` : ""}
+    <label for="mmTo">إلى</label><select id="mmTo">${others.map(r => `<option value="${r}" ${re && re.from === r ? "selected" : ""}>${ROLES[r]}</option>`).join("")}</select>
+    <label for="mmT">الرسالة</label><textarea id="mmT" rows="3" maxlength="1000" placeholder="مثال: الطالب خالد سدّد كامل الرسوم، تقدرون تصدرون شهادته"></textarea>
+    <div class="row" style="margin-top:10px"><button class="btn pri" id="mmSend">إرسال</button><span class="muted">توصل المستلم إشعار، وتبقى هنا مسجّلة.</span></div></div>
+  <div class="card"><div class="row">${[["in", "الوارد" + (memoUnread().length ? ` (${memoUnread().length} جديدة)` : "")], ["out", "المرسل"]].map(([k, v]) => `<button class="btn sm ${f === k ? "pri" : ""}" data-mmb="${k}">${v}</button>`).join("")}</div></div>
+  <div class="list">${list.map(m => { const parent = m.replyTo && mine.find(x => x.id === m.replyTo); return `<div class="card" style="margin:0 0 10px;${f === "in" && !m.readAt ? "border-inline-start:4px solid var(--g)" : ""}">
+    <div class="row" style="justify-content:space-between"><b>${f === "in" ? "من: " + esc(ROLES[m.from] || m.from) : "إلى: " + esc(ROLES[m.to] || m.to)}</b><span class="muted">${esc(bothDates((m.at || "").slice(0, 10)))} · ${esc((m.at || "").slice(11, 16))}</span></div>
+    ${parent ? `<div class="muted" style="margin-top:6px">ردًا على: ${esc(parent.text.slice(0, 60))}${parent.text.length > 60 ? "…" : ""}</div>` : ""}
+    <p style="margin:8px 0;white-space:pre-wrap">${esc(m.text)}</p>
+    <div class="row">${f === "in" ? `<button class="btn sm" data-mmre="${m.id}">رد</button>` : `<span class="pill ${m.readAt ? "p" : ""}">${m.readAt ? "انقرأت" : "ما انقرأت"}</span>`}</div></div>`; }).join("") || `<div class="card empty">ما فيه رسائل.</div>`}</div>`;
+  if (f === "in") memoUnread().forEach(m => setDoc(ref("memos/" + m.id), {readAt: new Date().toISOString()}, {merge: true}).catch(() => {}));
+  el.querySelectorAll("[data-mmb]").forEach(b => b.onclick = () => { S.memoBox = b.dataset.mmb; render(); });
+  el.querySelectorAll("[data-mmre]").forEach(b => b.onclick = () => { S.memoReply = b.dataset.mmre; render(); window.scrollTo(0, 0); setTimeout(() => $("#mmT") && $("#mmT").focus(), 50); });
+  if ($("#mmNoRe")) $("#mmNoRe").onclick = () => { S.memoReply = null; render(); };
+  $("#mmSend").onclick = async e => {
+    const text = $("#mmT").value.trim(), to = $("#mmTo").value; if (text.length < 2) return toast("اكتب الرسالة");
+    e.target.disabled = true;
+    const id = "mm-" + uid() + uid(), d = {from: me, to, text: text.slice(0, 1000), at: new Date().toISOString(), ...(re ? {replyTo: re.id} : {})};
+    try { await setDoc(ref("memos/" + id), d); notify("memo", id); logAction("رسالة داخلية", ROLES[to]); S.memoReply = null; S.memoBox = "out"; toast("انرسلت"); render(); }
+    catch (x) { e.target.disabled = false; handleWriteErr(x); }
+  };
+}
+
+/* ---------- academic requests: a student asks academic affairs, who replies in the portal and/or on WhatsApp ---------- */
+const AC_CATS = ["استفسار عام", "طلب خطاب تعريف", "الحضور والغياب", "الدرجات", "الجدول والمقررات", "أخرى"];
+/* free "ask a question" search over the FAQ: light Arabic normalising + synonyms, no AI */
+const FAQ_SYN = [["شهاده", "شهادات", "شهادتي", "افاده"], ["غياب", "غبت", "غايب", "حضور", "حضوري", "تحضير"], ["عذر", "اعذار", "عذري"], ["حرمان", "محروم", "انحرم"], ["انذار", "انذارات"],
+  ["فاتوره", "رسوم", "مبلغ", "قسط", "اقساط", "دفع", "سداد", "فلوس", "ماليه", "مالي"], ["تطبيق", "تثبيت", "تنزيل", "ابلكيشن", "برنامج"], ["درجه", "درجات", "نتيجه", "نتايج", "علامات"],
+  ["جدول", "محاضره", "محاضرات", "موعد", "مواعيد", "تيمز", "teams"], ["رمز", "كود", "باسورد", "كلمه", "دخول", "ادخل", "تسجيل"], ["بطاقه", "بطاقتي", "كرت"], ["اجازه", "اجازات", "تقويم", "عطله"], ["تواصل", "رقم", "واتساب", "جوال"]];
+const FAQ_STOP = new Set(["كيف", "وش", "ايش", "متى", "هل", "ابي", "ابغى", "ابغي", "ممكن", "عن", "في", "من", "على", "علي", "اللي", "ما", "لي", "او", "انا", "عندي", "وين", "كم", "ليش", "اذا", "وشلون", "اعرف", "يعرف", "الفى", "القى", "الحين", "بعد", "قبل", "هذا", "هذي", "سوي", "اسوي"].map(w => norm(w)));
+const faqTok = t => norm(t).toLowerCase().replace(/[\u064B-\u0652]/g, "").replace(/[^\u0600-\u06FFa-z0-9 ]/g, " ").split(" ").filter(Boolean)
+  .map(w => w.replace(/^(وال|بال|فال|كال|لل|ال)/, "").replace(/^[وب](?=\S{3,})/, "")).filter(w => w.length > 1 && !FAQ_STOP.has(w));
+const faqKey = w => { const g = FAQ_SYN.findIndex(l => l.some(x => w === x || (x.length > 3 && w.startsWith(x.slice(0, -1))) || (w.length > 3 && x.startsWith(w)))); return g >= 0 ? "#" + g : w; };
+function faqSearch(q){
+  const qs = [...new Set(faqTok(q).map(faqKey))]; if (!qs.length) return [];
+  return ((S.site || {}).faq || DEFAULT_FAQ).filter(f => f.q && f.a).map(f => {
+    const tq = new Set(faqTok(f.q).map(faqKey)), ta = new Set(faqTok(f.a).map(faqKey));
+    return {f, score: qs.reduce((n, w) => n + (tq.has(w) ? 2 : ta.has(w) ? 1 : 0), 0)};
+  }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 3).map(x => x.f);
+}
+function studentAcReq(el){
+  const reqs = (S.myAReq || []).slice().sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const lastPhone = (reqs.find(r => r.phone) || {}).phone || "";
+  el.innerHTML = `<div class="card"><h2>عندك سؤال؟</h2><p class="muted" style="margin-top:0">اكتب سؤالك بكلامك، وتطلع لك الإجابة على طول.</p>
+    <input type="search" id="fqS" placeholder="مثال: كيف أطلع شهادتي؟" value="${esc(S._fqS || "")}"><div id="fqR" style="margin-top:8px"></div></div>
+  <div class="card" id="arForm"><h2>طلب أو استفسار للشؤون الأكاديمية</h2><p class="muted" style="margin-top:0">اكتب طلبك، ويوصلك الرد هنا أو على الواتساب.</p>
+    <label for="arC">النوع</label><select id="arC">${AC_CATS.map(c => `<option>${c}</option>`).join("")}</select>
+    <label for="arT">طلبك أو استفسارك</label><textarea id="arT" rows="3" maxlength="800" placeholder="مثال: أبي خطاب تعريف لجهة عملي"></textarea>
+    <label for="arP">جوالك للتواصل</label><input type="tel" id="arP" dir="ltr" placeholder="05xxxxxxxx" inputmode="numeric" value="${esc(lastPhone ? "0" + lastPhone.slice(3) : "")}">
+    <div class="row" style="margin-top:10px"><button class="btn pri" id="arSend">إرسال للشؤون الأكاديمية</button></div></div>
+  ${reqs.length ? `<div class="card"><h2>طلباتي</h2><div class="list">${reqs.map(r => `<div class="item" style="align-items:flex-start"><div class="grow"><div class="muted">${esc(r.cat || "")} · ${esc(bothDates((r.at || "").slice(0, 10)))}</div><div>${esc(r.text)}</div>${r.reply ? `<div class="notice" style="margin:8px 0 0"><b>رد الشؤون الأكاديمية:</b> ${esc(r.reply)}</div>` : ""}</div><span class="pill ${r.status === "done" ? "p" : ""}">${r.status === "done" ? "تم الرد" : "قيد المراجعة"}</span></div>`).join("")}</div></div>` : ""}`;
+  const fqShow = () => {
+    const q = $("#fqS").value.trim(); S._fqS = q;
+    if (q.length < 2) { $("#fqR").innerHTML = ""; return; }
+    const hits = faqSearch(q);
+    $("#fqR").innerHTML = hits.length ? hits.map((f, i) => `<details class="item" style="display:block;padding:10px 12px" ${i === 0 ? "open" : ""}><summary style="cursor:pointer;font-weight:700">${esc(f.q)}</summary><p style="margin:8px 0 0">${esc(f.a)}</p></details>`).join("") + `<p class="muted" style="margin:8px 0 0">ما لقيت جوابك؟ <a href="#arForm" id="fqAsk">أرسل سؤالك للشؤون الأكاديمية</a></p>`
+      : `<p class="muted" style="margin:0">ما لقيت إجابة جاهزة. <a href="#arForm" id="fqAsk">أرسل سؤالك للشؤون الأكاديمية</a> ويردون عليك.</p>`;
+    $("#fqAsk").onclick = e => { e.preventDefault(); if (!$("#arT").value.trim()) $("#arT").value = q; $("#arForm").scrollIntoView({behavior: "smooth"}); $("#arT").focus(); };
+  };
+  let fqT; $("#fqS").oninput = () => { clearTimeout(fqT); fqT = setTimeout(fqShow, 250); }; if (S._fqS) fqShow();
+  reqs.filter(r => r.status === "done" && r.reply && !r.seen).forEach(r => setDoc(ref("acReqs/" + r.id), {seen: true}, {merge: true}).catch(() => {}));
+  $("#arSend").onclick = async e => {
+    const text = $("#arT").value.trim(), ph = normPhone($("#arP").value), cat = $("#arC").value;
+    if (text.length < 3) return toast("اكتب طلبك"); if (!/^9665\d{8}$/.test(ph)) return toast("اكتب رقم جوال صحيح");
+    e.target.disabled = true;
+    const id = "ar-" + uid() + uid();
+    try { await setDoc(ref("acReqs/" + id), {num: S.myNum, name: (S.myStudent && S.myStudent.name) || "", status: "new", at: new Date().toISOString(), cat, text: text.slice(0, 800), phone: ph}); notify("acad", id); toast("انرسل طلبك للشؤون الأكاديمية"); }
+    catch (x) { e.target.disabled = false; handleWriteErr(x); }
+  };
+}
+function adminAcReqs(el){
+  const all = (S.aReqs || []).slice().sort((a, b) => (a.status === "new") === (b.status === "new") ? (b.at || "").localeCompare(a.at || "") : a.status === "new" ? -1 : 1);
+  const f = S.arFilter || "new", list = f === "all" ? all : all.filter(r => r.status === f);
+  el.innerHTML = `<div class="card"><h2>طلبات واستفسارات الطلاب</h2><p class="muted" style="margin-top:0">اكتب ردك ويظهر للطالب في بوابته ويوصله إشعار، أو تواصل معه بالواتساب.</p>
+    <div class="row">${[["new", "الجديدة"], ["done", "تم الرد"], ["all", "الكل"]].map(([k, v]) => `<button class="btn sm ${f === k ? "pri" : ""}" data-arf="${k}">${v} (${k === "all" ? all.length : all.filter(r => r.status === k).length})</button>`).join("")}</div></div>
+  <div class="list">${list.map(r => `<div class="card" style="margin:0 0 10px"><div class="row" style="justify-content:space-between"><div><b>${esc((S.students[r.num] || {}).name || r.name)}</b> <span class="muted">${esc(r.num)} · ${esc(r.cat || "")} · ${esc(bothDates((r.at || "").slice(0, 10)))}</span></div><span class="pill ${r.status === "done" ? "p" : "l"}">${r.status === "done" ? "تم الرد" : "جديد"}</span></div>
+    <p style="margin:8px 0">${esc(r.text)}</p>
+    ${r.reply ? `<div class="notice" style="margin:0 0 8px"><b>الرد:</b> ${esc(r.reply)}</div>` : ""}
+    ${RO() ? "" : `${r.status !== "done" ? `<textarea id="arr-${r.id}" rows="2" maxlength="600" placeholder="ردك (اختياري، يظهر للطالب)"></textarea>` : ""}
+    <div class="row" style="margin-top:8px">${r.status !== "done" ? `<button class="btn sm pri" data-ardone="${r.id}">إرسال الرد / تم</button>` : ""}${r.phone ? `<a class="btn sm gold" style="text-decoration:none" target="_blank" rel="noopener" href="https://wa.me/${esc(r.phone)}?text=${encodeURIComponent(`السلام عليكم ${r.name}، بخصوص طلبك للشؤون الأكاديمية في ${INST_AR}:\n`)}">واتساب</a>` : ""}<button class="btn sm danger" data-ardel="${r.id}">حذف</button></div>`}
+  </div>`).join("") || `<div class="card empty">ما فيه طلبات هنا.</div>`}</div>`;
+  el.querySelectorAll("[data-arf]").forEach(b => b.onclick = () => { S.arFilter = b.dataset.arf; render(); });
+  el.querySelectorAll("[data-ardone]").forEach(b => b.onclick = async () => {
+    const id = b.dataset.ardone, r = all.find(x => x.id === id), reply = (($("#arr-" + id) || {}).value || "").trim().slice(0, 600);
+    b.disabled = true;
+    try { await setDoc(ref("acReqs/" + id), {status: "done", reply, doneAt: new Date().toISOString(), doneBy: S.adminRole}, {merge: true}); notify("acad", id); logAction("رد على طلب طالب", `${r.name} · ${r.cat || ""}`); toast("تم"); } catch (e) { b.disabled = false; handleWriteErr(e); }
+  });
+  el.querySelectorAll("[data-ardel]").forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; }
+    try { await deleteDoc(ref("acReqs/" + b.dataset.ardel)); toast("انحذف"); } catch (e) { handleWriteErr(e); }
+  });
+}
 function adminExcuses(el){
   const f = S.excFilter || "pending";
   const list = (S.excuses || []).filter(x => f === "all" || x.status === f).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
@@ -3103,7 +3208,7 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles", "waivers"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles", "waivers", "acReqs", "memos"];
 const NO_RESTORE = ["logs"];
 const APPEND_ONLY = ["payments", "expenses", "commPays"];   // money records are never deleted or rewritten: a restore only brings back missing ones
 const canon = v => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x);   // the audit log is append-only; a restore never rewrites it
@@ -3524,11 +3629,11 @@ const paysOf = num => (S.pays || []).filter(p => p.num === num);
 function adminFinance(el){
   const t = S.finTab || "sum";
   const nW = fReqWaiting();
-  const tabs = [["sum", "الملخص"], ["req", "طلبات الطلاب" + (nW ? ` (${nW})` : "")], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"]] : []), ["set", "الإعدادات"]];
+  const tabs = [["sum", "الملخص"], ["req", "طلبات الطلاب" + (nW ? ` (${nW})` : "")], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"], ["memo", "المراسلات" + memoBadge()]] : []), ["set", "الإعدادات"]];
   el.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${t === k ? "on" : ""}" data-ft="${k}">${v}</button>`).join("")}</div></div><div id="fb"></div>`;
   el.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { S.finTab = b.dataset.ft; render(); });
   if (!S.finSet) { $("#fb").innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
-  ({sum: finSummary, req: finReqTab, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, set: finSettings})[t]($("#fb"));
+  ({sum: finSummary, req: finReqTab, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, memo: memosTab, set: finSettings})[t]($("#fb"));
 }
 function finRows(){
   return Object.values(S.students).map(s => { const acc = (S.finAcc || {})[s.num]; return {s, acc, st: acc ? accStatus(acc, paysOf(s.num)) : {net: 0, paid: 0, remaining: 0, overdue: 0, status: "none"}}; });
