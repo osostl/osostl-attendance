@@ -22,7 +22,7 @@ cat > /opt/osos-rec/server.py <<'PY'
 # Small upload/download service for lecture recordings, behind nginx at /rec/.
 import hmac, hashlib, json, base64, os, re, shutil, time, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 ROOT = "/var/osos-rec"
 SECRET = open("/etc/osos-rec/secret").read().strip().encode()
@@ -43,7 +43,8 @@ def ticket(raw, op):
 def path_of(t):
     gid, rid = str(t.get("gid", "")), str(t.get("rid", ""))
     if not OK_ID.match(gid) or not OK_RID.match(rid): return None
-    return os.path.join(ROOT, gid, rid + ".webm")
+    # mail attachments ("k": "mail") are kept apart from recordings and are never touched by /purge
+    return os.path.join(ROOT, gid, rid + (".att" if t.get("k") == "mail" else ".webm"))
 
 def dir_size(p):
     n = 0
@@ -100,7 +101,14 @@ class H(BaseHTTPRequestHandler):
             if not p or not os.path.exists(p): return self.send(404, {"error": "missing"})
             self.send_response(200)
             self.send_header("X-Accel-Redirect", "/_osos_rec/" + os.path.relpath(p, ROOT))
-            self.send_header("Content-Type", "video/webm")
+            if t.get("k") == "mail":
+                ct = str(t.get("ct", ""))
+                if not re.match(r"^[\w.+-]+/[\w.+-]+$", ct): ct = "application/octet-stream"
+                fn = quote(str(t.get("fn", "file"))[:150], safe="")
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + fn)
+            else:
+                self.send_header("Content-Type", "video/webm")
             self.end_headers(); return
         if r == "/stats":
             if not self.t("stats"): return self.send(403, {"error": "ticket"})

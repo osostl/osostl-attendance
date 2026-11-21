@@ -181,7 +181,7 @@ async function joinLecture(g, btn){
 function openRoom(g, tok){
   closeRoom();
   const mod = !!tok.moderator, w = document.createElement("div"); w.id = "roomWrap";
-  w.innerHTML = `<div class="roomBar"><b class="grow">${esc(g.course || "المحاضرة")}</b>${mod ? `<button class="btn sm" id="rmTeams">نقل المحاضرة لـ Teams</button><button class="btn sm danger" id="rmEnd">إنهاء المحاضرة للكل</button>` : ""}<button class="btn sm" id="rmOut">خروج</button></div><div id="roomBox"></div>`;
+  w.innerHTML = `<div class="roomBar"><b class="grow">${esc(g.course || "المحاضرة")}</b>${mod && !tok.observer ? `<button class="btn sm" id="rmRec">⏺ ابدأ التسجيل</button>` : ""}${mod ? `<button class="btn sm" id="rmTeams">نقل المحاضرة لـ Teams</button><button class="btn sm danger" id="rmEnd">إنهاء المحاضرة للكل</button>` : ""}<button class="btn sm" id="rmOut">خروج</button></div><div id="roomBox"></div>`;
   document.body.appendChild(w); document.body.style.overflow = "hidden";
   const api = new window.JitsiMeetExternalAPI(tok.domain, {
     roomName: tok.room, jwt: tok.jwt, parentNode: w.querySelector("#roomBox"), width: "100%", height: "100%", lang: "ar",
@@ -190,32 +190,95 @@ function openRoom(g, tok){
       localRecording: {disable: !mod || !!tok.observer, notifyAllParticipants: true}},
     interfaceConfigOverwrite: {MOBILE_APP_PROMO: false, SHOW_JITSI_WATERMARK: false}
   });
-  S.room = {api, gid: g.id, mod};
-  // students cannot turn their camera on until the trainer allows it
-  if (mod && !tok.observer) api.addListener("videoConferenceJoined", () => { try { api.executeCommand("toggleModeration", true, "video"); } catch {} });
-  api.addListener("readyToClose", closeRoom);
+  S.room = {api, gid: g.id, mod, rec: !!(mod && !tok.observer), recOn: false, recUsed: false};
+  // students cannot turn their camera on until the trainer allows it; the trainer is asked to start recording straight away
+  if (mod && !tok.observer) api.addListener("videoConferenceJoined", () => { try { api.executeCommand("toggleModeration", true, "video"); } catch {} setTimeout(() => recAsk(g), 1200); });
+  if (S.room.rec) api.addListener("recordingStatusChanged", e => {
+    if (!S.room || S.room.api !== api || (e && e.mode && e.mode !== "local")) return;
+    S.room.recOn = !!(e && e.on); if (S.room.recOn) { S.room.recUsed = true; clearTimeout(S.room.recWait); }
+    recBtn();
+  });
+  api.addListener("readyToClose", () => { const used = S.room && S.room.recUsed; closeRoom(); if (used) recAfter(g); });
   // everyone in the room follows the lecture if it moves to Teams or ends
   S.room.unsub = onSnapshot(ref("live/" + g.id), x => {
     const l = x.exists() ? x.data() : null; if (!S.room || S.room.gid !== g.id) return;
     if (l && l.on && l.mode === "teams" && !S.room.leaving) { closeRoom(); teamsPrompt(g, "انتقلت المحاضرة"); }
     else if (l && !l.on && !mod) { closeRoom(); toast("انتهت المحاضرة"); }
   }, () => {});
-  w.querySelector("#rmOut").onclick = closeRoom;
+  w.querySelector("#rmOut").onclick = async () => { const used = await recStop(); closeRoom(); if (used) recAfter(g); };
+  if (S.room.rec) w.querySelector("#rmRec").onclick = () => S.room.recOn ? recStop().then(() => recBtn()) : recStart();
   if (mod) {
     w.querySelector("#rmTeams").onclick = async () => {
       if (!validLink(g.meetLink)) return toast("حط رابط Teams للمقرر أول، من صفحة المقرر");
       S.room.leaving = true;
       try { await setDoc(ref("live/" + g.id), {gid: g.id, on: true, mode: "teams", at: new Date().toISOString(), by: S.me || S.adminRole || "", course: g.course || ""}); notify("live", g.id); logAction("نقل محاضرة لـ Teams", g.course); } catch (e) { handleWriteErr(e); }
-      closeRoom(); teamsPrompt(g, "");
+      const used = await recStop(); closeRoom(); teamsPrompt(g, ""); if (used) recAfter(g);
     };
     w.querySelector("#rmEnd").onclick = async e => {
       if (!e.target.dataset.sure) { e.target.dataset.sure = 1; e.target.textContent = "متأكد؟ تنتهي للكل"; return; }
-      S.room.leaving = true;
+      S.room.leaving = true; e.target.disabled = true;
+      const used = await recStop();
       try { api.executeCommand("endConference"); } catch {}
       await endLive(g);
-      setTimeout(closeRoom, 800);
+      setTimeout(() => { closeRoom(); if (used) recAfter(g); }, 800);
     };
   }
+}
+/* ---------- semi-automatic recording: the trainer is asked to record when the lecture opens, and to upload when it ends ---------- */
+function recBtn(){
+  const b = $("#rmRec"); if (!b || !S.room) return;
+  b.textContent = S.room.recOn ? "⏹ إيقاف التسجيل" : "⏺ ابدأ التسجيل";
+  b.style.background = S.room.recOn ? "#c0392b" : ""; b.style.color = S.room.recOn ? "#fff" : ""; b.style.borderColor = S.room.recOn ? "#c0392b" : "";
+}
+function recStart(){
+  const r = S.room; if (!r || !r.rec) return;
+  try { r.api.executeCommand("startRecording", {mode: "local"}); } catch (e) { console.error(e); }
+  clearTimeout(r.recWait);
+  r.recWait = setTimeout(() => { if (S.room === r && !r.recOn) toast("إذا ما بدأ التسجيل: من القائمة (…) داخل القاعة اختر «بدء التسجيل»، ووافق على مشاركة هذي الصفحة"); }, 15000);
+}
+/* stop a running recording and give the browser time to save the file; returns whether anything was recorded */
+async function recStop(){
+  const r = S.room; if (!r || !r.rec) return false;
+  if (r.recOn) { try { r.api.executeCommand("stopRecording", "local"); } catch {} await new Promise(ok => setTimeout(ok, 3000)); r.recOn = false; }
+  return r.recUsed;
+}
+function recAsk(g){
+  const r = S.room; if (!r || !r.rec || r.recOn || r.asked || $("#recAskW")) return; r.asked = true;
+  const w = document.createElement("div"); w.className = "roomAsk"; w.id = "recAskW";
+  w.innerHTML = `<div class="card" style="max-width:420px;width:100%;margin:0;text-align:center"><h2>تسجيل المحاضرة</h2><p class="muted">سجّل المحاضرة عشان الطلاب يرجعون لها. بعد ما تضغط، اختر «علامة التبويب هذي» ووافق. التسجيل ينحفظ على جهازك، وبعد ما تنهي المحاضرة نطلب منك ترفعه.</p><div class="row" style="justify-content:center"><button class="btn pri" id="raGo">⏺ ابدأ التسجيل</button><button class="btn" id="raNo">بدون تسجيل</button></div></div>`;
+  document.body.appendChild(w);
+  w.querySelector("#raGo").onclick = () => { w.remove(); recStart(); };
+  w.querySelector("#raNo").onclick = () => w.remove();
+}
+async function saveRecList(g, list){
+  try { await setDoc(ref("groups/" + g.id), {recordings: list}, {merge: true}); if (S.groups[g.id]) S.groups[g.id].recordings = list; logAction("تسجيلات المحاضرات", g.course); return true; }
+  catch (e) { handleWriteErr(e); return false; }
+}
+function recAfter(g){
+  if ($("#recUpW")) return;
+  const w = document.createElement("div"); w.className = "roomAsk"; w.id = "recUpW";
+  w.innerHTML = `<div class="card" style="max-width:460px;width:100%;margin:0"><h2>ارفع تسجيل المحاضرة الحين</h2><p class="muted" style="margin-top:0">التسجيل انحفظ في «التنزيلات» بجهازك (ملف ينتهي بـ .webm). اختره وارفعه، ويظهر لطلاب المقرر مباشرة.</p>
+    <label class="f" for="ruT">العنوان<input type="text" id="ruT" value="${esc((g.course || "محاضرة") + " - " + today())}"></label>
+    <label class="f" for="ruD">التاريخ<input type="date" id="ruD" value="${today()}"></label>
+    <input type="file" id="ruF" accept="video/webm,video/mp4,.webm,.mp4" style="margin:8px 0;width:100%">
+    <div class="muted" id="ruP"></div>
+    <div class="row" style="margin-top:10px"><button class="btn pri" id="ruGo">رفع</button><button class="btn" id="ruX">بعدين من صفحة المقرر</button></div></div>`;
+  document.body.appendChild(w);
+  const f = w.querySelector("#ruF"); setTimeout(() => { try { f.click(); } catch {} }, 300);
+  w.querySelector("#ruX").onclick = () => w.remove();
+  w.querySelector("#ruGo").onclick = async e => {
+    const file = f.files[0]; if (!file) return toast("اختر ملف التسجيل");
+    if (file.size > 4 * 1024 ** 3) return toast("الملف أكبر من 4 جيجا");
+    e.target.disabled = true; w.querySelector("#ruX").disabled = true;
+    try {
+      const r = await recUpload(g, file, pct => { w.querySelector("#ruP").textContent = `جاري الرفع… ${pct}% (لا تقفل الصفحة)`; });
+      const cur = (S.groups[g.id] || g).recordings || [];
+      const item = {date: w.querySelector("#ruD").value || today(), title: w.querySelector("#ruT").value.trim() || "محاضرة", rid: r.rid, size: file.size, by: S.me || S.adminRole || ""};
+      if (await saveRecList(g, [...cur, item].sort((a, b) => b.date.localeCompare(a.date)))) { w.remove(); toast("انرفع التسجيل، وطلاب المقرر يشوفونه الحين"); render(); }
+      else e.target.disabled = false;
+    } catch (x) { console.error(x); w.querySelector("#ruP").textContent = ""; toast(x.message === "full" ? "مساحة السيرفر ما تكفي، كلم الإدارة" : "تعذّر رفع التسجيل، حاول مرة ثانية"); e.target.disabled = false; }
+    finally { w.querySelector("#ruX").disabled = false; }
+  };
 }
 /* ---------- staff account security (general administration) ---------- */
 function askCode(title){
@@ -318,7 +381,8 @@ const endLive = g => setDoc(ref("live/" + g.id), {gid: g.id, on: false, mode: "o
   .then(() => logAction("إنهاء محاضرة", g.course)).catch(handleWriteErr);
 function closeRoom(){
   const r = S.room; S.room = null;
-  if (r) { try { r.unsub && r.unsub(); } catch {} try { r.api.dispose(); } catch {} }
+  if (r) { clearTimeout(r.recWait); try { r.unsub && r.unsub(); } catch {} try { r.api.dispose(); } catch {} }
+  const ra = $("#recAskW"); if (ra) ra.remove();
   const w = $("#roomWrap"); if (w) w.remove(); document.body.style.overflow = "";
 }
 /* administration and academic affairs: every lecture running now, to watch, move or end */
@@ -327,11 +391,33 @@ function liveTab(el){
   if (S._joinDay !== today()) { if (S._joinSub) S._joinSub(); S._joinDay = today(); S._joinSub = onSnapshot(query(collection(db, "joins"), where("date", "==", today())), x => { S.joinsToday = x.docs.map(d => d.data()); if (S.aTab === "live" && !busyEditing()) render(); }, () => {}); }
   const joined = gid => (S.joinsToday || []).filter(j => j.groupId === gid).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
   const list = (S.lives || []).filter(liveOn).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const day = iso => { try { return new Date(iso).toLocaleDateString("en-CA"); } catch { return ""; } };
+  const recToday = gid => ((S.groups[gid] || {}).recordings || []).some(r => r.date === today());
+  const endedNoRec = (S.lives || []).filter(l => !l.on && l.mode === "osos" && day(l.endedAt || l.at) === today() && !recToday(l.gid));
+  const allRecs = Object.values(S.groups).filter(g => (g.recordings || []).length).sort((a, b) => (a.course || "").localeCompare(b.course || "", "ar"));
+  const rf = S._recFilter || "";
   el.innerHTML = `<div class="card"><h2>المحاضرات الآن (${list.length})</h2><p class="muted" style="margin:0">تشوف مين دخل من الطلاب بدون ما تدخل القاعة. ولو دخلت كمشرف، تدخل والكاميرا والمايك مطفيين، واسمك يظهر في قائمة المشاركين «الإدارة». وتقدر تنقل المحاضرة لـ Teams أو تنهيها، وداخل القاعة تكتم أو تطرد أي مشارك.</p></div>
   <div class="list">${list.map(l => { const g = S.groups[l.gid] || {}; return `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(g.course || l.course || l.gid)}</div><div class="muted">${esc(tName(g.trainerId || ""))} · بدأت ${esc(fmtTime(new Date(l.at).toTimeString().slice(0, 5)))} · ${l.mode === "teams" ? "على Teams" : "قاعة المعهد"}</div>
     ${(js => js.length ? `<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">دخل ${js.length} من ${(g.memberNums || []).length} طالب</summary><div class="muted" style="margin-top:4px">${js.map(j => `${esc((S.students[j.num] || {}).name || j.num)} (${esc(fmtTime(j.time))})`).join("، ")}</div></details>` : `<div class="muted">ما دخل أحد من الطلاب للحين</div>`)(joined(l.gid))}</div>
     ${l.mode === "osos" ? `<button class="btn sm pri" data-lvw="${esc(l.gid)}">دخول كمشرف</button>` : validLink(g.meetLink) ? `<a class="btn sm" style="text-decoration:none" href="${esc(g.meetLink)}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
-    ${RO() ? "" : `${l.mode === "osos" ? `<button class="btn sm" data-lvt="${esc(l.gid)}">نقل لـ Teams</button>` : ""}<button class="btn sm danger" data-lve="${esc(l.gid)}">إنهاء</button>`}</div>`; }).join("") || `<div class="card empty">ما فيه محاضرات شغالة الحين.</div>`}</div>`;
+    ${RO() ? "" : `${l.mode === "osos" ? `<button class="btn sm" data-lvt="${esc(l.gid)}">نقل لـ Teams</button>` : ""}<button class="btn sm danger" data-lve="${esc(l.gid)}">إنهاء</button>`}</div>`; }).join("") || `<div class="card empty">ما فيه محاضرات شغالة الحين.</div>`}</div>
+  ${endedNoRec.length ? `<div class="card" style="border-color:#e0a800"><h2>محاضرات اليوم بدون تسجيل مرفوع (${endedNoRec.length})</h2><div class="list">${endedNoRec.map(l => { const g = S.groups[l.gid] || {}; return `<div class="item"><div class="grow"><div class="t">${esc(g.course || l.course || l.gid)}</div><div class="muted">${esc(tName(g.trainerId || ""))} · انتهت ${esc(fmtTime(new Date(l.endedAt || l.at).toTimeString().slice(0, 5)))}</div></div><span class="pill a">ما انرفع تسجيل</span></div>`; }).join("")}</div></div>` : ""}
+  <div class="card"><h2>تسجيلات المحاضرات</h2>
+    <p class="muted" style="margin-top:0">كل التسجيلات المرفوعة لكل المقررات. ${RO() ? "" : "الحذف يمسح الملف من سيرفر القاعة ويختفي عن الطلاب، ويُكتب في السجل."}</p>
+    <input type="search" id="rcF" placeholder="ابحث باسم المقرر أو المدرب" value="${esc(rf)}" style="width:100%;margin-bottom:8px">
+    <div class="list">${allRecs.filter(g => !rf || (g.course || "").includes(rf) || tName(g.trainerId || "").includes(rf)).map(g => `<details class="item" style="display:block"><summary style="cursor:pointer"><b>${esc(g.course || g.id)}</b> <span class="muted">· ${esc(tName(g.trainerId || ""))} · ${(g.recordings || []).length} تسجيل</span></summary>
+      ${(g.recordings || []).map((r, i) => `<div class="row" style="margin-top:6px;flex-wrap:wrap"><span class="grow">${esc(r.date)} · ${esc(r.title)}${r.size ? ` <span class="muted">(${esc(fmtSize(r.size))})</span>` : ""}${recToday(g.id) && r.date === today() ? ` <span class="pill p">اليوم</span>` : ""}</span><button class="btn sm" data-arp="${esc(g.id)}:${i}">تشغيل</button>${RO() ? "" : `<button class="btn sm danger" data-ard="${esc(g.id)}:${i}">حذف</button>`}</div>`).join("")}</details>`).join("") || `<div class="empty muted">ما فيه تسجيلات للحين.</div>`}</div></div>`;
+  const rcF = el.querySelector("#rcF"); if (rcF) rcF.oninput = () => { S._recFilter = rcF.value.trim(); clearTimeout(S._rcT); S._rcT = setTimeout(() => { render(); const x = $("#rcF"); if (x) { x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 300); };
+  const pick = v => { const [gid, i] = v.split(":"), g = S.groups[gid]; return g ? [g, (g.recordings || [])[Number(i)], Number(i)] : []; };
+  el.querySelectorAll("[data-arp]").forEach(b => b.onclick = () => { const [g, r] = pick(b.dataset.arp); if (r) playRec(g, r); });
+  el.querySelectorAll("[data-ard]").forEach(b => b.onclick = async () => {
+    const [g, r, i] = pick(b.dataset.ard); if (!r) return;
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟ ينحذف نهائياً"; return; }
+    b.disabled = true;
+    if (r.rid) { try { await recDelete(g, r); } catch (e) { console.error(e); b.disabled = false; return toast("تعذّر حذف الملف من السيرفر"); } }
+    const l = [...(g.recordings || [])]; l.splice(i, 1);
+    if (await saveRecList(g, l)) { toast("انحذف التسجيل"); render(); } else b.disabled = false;
+  });
   el.querySelectorAll("[data-lvw]").forEach(b => b.onclick = async () => {
     const g = S.groups[b.dataset.lvw]; if (!g) return; b.disabled = true;
     try { await loadJitsi(MEET()); const tok = await meetToken(g.id); openRoom(g, tok); logAction("دخول محاضرة كمشرف", g.course); }
@@ -466,6 +552,7 @@ function startData(){
       let at = 0; try { at = Number((await S.authUser.getIdTokenResult()).claims.auth_time || 0); } catch {}
       if (t >= at) { try { sessionStorage.setItem("lockOut", "1"); } catch {} logout(); }
     }, () => {}));
+    if (!RO()) { S.mail = null; mailSubs(); }
     if (!RO()) S.subs.push(onSnapshot(collection(db, "memos"), snap => { S.memos = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     if (!FIN()) S.subs.push(onSnapshot(collection(db, "acReqs"), snap => { S.aReqs = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     if (!FIN()) S.subs.push(onSnapshot(collection(db, "waivers"), snap => { S.waivers = {}; snap.docs.forEach(d => S.waivers[d.id] = d.data()); afterData(); }, () => {}));
@@ -509,7 +596,7 @@ function busyEditing(){
   const a = document.activeElement;
   if (!a || !a.closest) return false;
   if (S._busy) return true;
-  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["fqS","arT","arP","mmT","mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","vapK","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
+  return (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && (["fqS","arT","arP","mmT","mcTo","mcCc","mcS","mcT","mlQ","mlink","recT","recU","recD","wm","wp","mMsg","lockH","aText","aExp","lq","th1","th2","th3","th4","hLabel","hFrom","hTo","repM","exR","exN","arName","arOk","faQ","prN","prF","pAmt","pRef","pN","pvR","fFee","fDis","fDisN","fPh","sB","sAdd","sDed","sNote","salM","exA","exT","exVR","xL","xA","etN","etF","ptN","ptP","ptV","cA","cN","exRef","cdL","cdA","vapK","evL","evD","accN","licU","pfNid","pfPh","pfG","pfE","pfEdu","pfCity","pfN","aeN","crT","crF","crTo","crH","crTr","crP","crS","crXN","crXP","srT","srN","srRR","nwT","nwU","nwX","so-maps","so-whatsapp","so-website","so-x","so-instagram","so-snapchat","so-tiktok","so-linkedin"].includes(a.id) || !!a.closest("#roll, #gradesBox, #ab, #sb, #modalBox"));
 }
 
 /* ---------- audit log ---------- */
@@ -1847,14 +1934,14 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
-  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["areqs","طلبات الطلاب" + ((S.aReqs || []).some(r => r.status === "new") ? ` (${S.aReqs.filter(r => r.status === "new").length})` : "")],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["memos","المراسلات" + memoBadge()],...(MEET() ? [["live","المحاضرات الآن"]] : []),["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["areqs","طلبات الطلاب" + ((S.aReqs || []).some(r => r.status === "new") ? ` (${S.aReqs.filter(r => r.status === "new").length})` : "")],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["memos","المراسلات" + memoBadge()],["mail","البريد" + mailBadge()],...(MEET() ? [["live","المحاضرات والتسجيلات"]] : []),["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${backupNag()}${absNag()}${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "follow" && S.allAtt && ["academic", "admin"].includes(S.adminRole) ? (n => n ? ` (${n})` : "")(absAlerts().alerts.filter(alertWaiting).length) : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
   if ($("#nagAbs")) $("#nagAbs").onclick = () => { S.aTab = "follow"; render(); };
   if ($("#nagBk")) $("#nagBk").onclick = async e => { e.target.disabled = true; try { await backupAll(); toast("نزلت النسخة الاحتياطية"); render(); } catch (x) { console.error(x); toast("تعذّر أخذ النسخة"); e.target.disabled = false; } };
-  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, areqs: adminAcReqs, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, memos: memosTab, live: liveTab, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
+  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, areqs: adminAcReqs, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, memos: memosTab, mail: mailTab, live: liveTab, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
 }
 
 function adminDash(el){
@@ -2848,6 +2935,183 @@ function adminFollow(el){
 }
 
 /* ---------- excuses tab ---------- */
+/* ---------- institute mail (@osustl.com) inside the portal ----------
+   Each department reads and sends from its own address; the general administration sees every box.
+   Messages arrive through Cloudflare Email Routing into the push service, which stores them in mbox/{role}/m (list) and mbox/{role}/b (body). */
+const MAIL_DOMAIN = "osustl.com";
+const MBOXES = {ceo: ["admin", "الإدارة العامة"], info: ["admin", "الإيميل العام"], academic: ["academic", "الشؤون الأكاديمية"], finance: ["finance", "المالية"],
+  admission: ["admin", "القبول والتسجيل"], support: ["admin", "خدمة العملاء"], hr: ["admin", "الموارد البشرية"], business: ["admin", "قطاع الشركات"]};
+const MAIL_ROLES_ALL = ["admin", "academic", "finance"];
+const myMailRoles = () => S.adminRole === "admin" ? MAIL_ROLES_ALL : MAIL_ROLES_ALL.includes(S.adminRole) ? [S.adminRole] : [];
+const myBoxes = () => Object.keys(MBOXES).filter(b => S.adminRole === "admin" || MBOXES[b][0] === S.adminRole);
+const mailAll = () => Object.values(S.mail || {}).flat().sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+const mailUnread = () => mailAll().filter(m => m.dir === "in" && !m.read && !m.trash);
+const mailBadge = () => { const n = mailUnread().length; return n ? ` (${n})` : ""; };
+function mailSubs(){
+  S.mail = {}; S.mailLim = S.mailLim || 120;
+  (S._mailSubs || []).forEach(u => { try { u(); } catch {} });
+  S._mailSubs = myMailRoles().map(r => onSnapshot(query(collection(db, "mbox", r, "m"), orderBy("at", "desc"), limit(S.mailLim)), snap => {
+    const old = (S.mail[r] || []).length;
+    S.mail[r] = snap.docs.map(d => ({id: d.id, r, ...d.data()}));
+    if (S._mailReady && S.mail[r].length > old && snap.docChanges().some(c => c.type === "added" && c.doc.data().dir === "in") && !isMailTab()) toast("وصلك بريد جديد");
+    afterData();
+  }, e => console.error(e)));
+  S.subs.push(() => { (S._mailSubs || []).forEach(u => { try { u(); } catch {} }); S._mailSubs = []; });
+  setTimeout(() => { S._mailReady = true; }, 4000);
+}
+const isMailTab = () => (FIN() ? S.finTab === "mail" : S.aTab === "mail");
+async function mailApi(body){
+  const url = ((S.site || {}).pushUrl || "").replace(/\/+$/, ""); if (!url) throw new Error("no service");
+  const r = await fetch(url + "/mail", {method: "POST", headers: {"content-type": "application/json", authorization: "Bearer " + await S.authUser.getIdToken()}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({})); if (!r.ok) { const e = new Error(j.error || "failed"); e.code = j.error; throw e; } return j;
+}
+const mailWhen = iso => { if (!iso) return ""; const d = new Date(iso), t = d.toLocaleDateString("en-CA"); return t === today() ? d.toLocaleTimeString("ar-SA-u-nu-latn", {hour: "numeric", minute: "2-digit"}) : d.toLocaleDateString("ar-SA-u-ca-gregory-nu-latn", {day: "numeric", month: "short"}); };
+const mailWhenFull = iso => iso ? new Date(iso).toLocaleString("ar-SA-u-ca-gregory-nu-latn", {weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit"}) : "";
+const boxLabel = b => MBOXES[b] ? `${MBOXES[b][1]} (${b}@)` : b;
+const MAIL_ERR = {"bad address": "فيه عنوان إيميل غير صحيح", "too big": "المرفقات أكبر من 20 ميجا", "attachment missing": "مرفق ما انرفع، احذفه وأعد إرفاقه", "sending off": "الإرسال ما تفعّل للحين في Cloudflare",
+  E_RECIPIENT_PLAN_RESTRICTED: "الإرسال للخارج يحتاج خطة Workers المدفوعة", E_SENDER_DOMAIN_NOT_CONFIGURED: "الدومين ما تجهّز للإرسال في Cloudflare", E_EMAIL_SENDING_NOT_READY: "الإرسال للحين يتجهّز في Cloudflare، جرّب بعد شوي",
+  E_RECIPIENT_SUPPRESSED: "هذا العنوان موقوف عنه الإرسال (رجع منه بريد قبل)", E_DAILY_LIMIT_EXCEEDED: "وصلتوا حد الإرسال اليومي", E_RATE_LIMIT_EXCEEDED: "إرسال كثير بوقت قصير، انتظر شوي"};
+function mailTab(el){
+  if (!S.mail) mailSubs();
+  const boxes = myBoxes(), all = mailAll();
+  if (S.mailDraft) return mailCompose(el);
+  if (S.mailOpen) { const m = all.find(x => x.id === S.mailOpen.id && x.r === S.mailOpen.r); if (m) return mailView(el, m); S.mailOpen = null; }
+  const f = S.mailF || "in", bx = boxes.includes(S.mailBox) ? S.mailBox : "", q = (S.mailQ || "").trim().toLowerCase();
+  const inBox = m => !bx || m.box === bx;
+  const list = all.filter(inBox).filter(m => f === "trash" ? m.trash : !m.trash && (f === "star" ? m.star : m.dir === f))
+    .filter(m => !q || [m.subject, m.fromName, m.from, (m.to || []).join(" "), m.snip].join(" ").toLowerCase().includes(q));
+  const un = b => all.filter(m => (!b || m.box === b) && m.dir === "in" && !m.read && !m.trash).length;
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">البريد</h2><button class="btn pri" id="mlNew">✉️ رسالة جديدة</button></div>
+    ${boxes.length > 1 ? `<div class="row" style="margin-top:10px;gap:6px">${["", ...boxes].map(b => `<button class="btn sm ${bx === b ? "pri" : ""}" data-mlbx="${b}">${b ? esc(MBOXES[b][1]) : "الكل"}${un(b) ? ` <b>(${un(b)})</b>` : ""}</button>`).join("")}</div>` : `<p class="muted" style="margin:6px 0 0" dir="ltr">${esc(boxes[0] || "")}@${MAIL_DOMAIN}</p>`}
+    <div class="row" style="margin-top:10px;gap:6px">${[["in", "الوارد"], ["out", "المرسل"], ["star", "★ المميزة"], ["trash", "المحذوفات"]].map(([k, v]) => `<button class="btn sm ${f === k ? "pri" : ""}" data-mlf="${k}">${v}${k === "in" && un(bx) ? ` (${un(bx)})` : ""}</button>`).join("")}</div>
+    <input type="search" id="mlQ" placeholder="بحث بالاسم أو الإيميل أو العنوان" value="${esc(S.mailQ || "")}" style="margin-top:10px;width:100%"></div>
+  <div class="list" style="grid-template-columns:minmax(0,1fr)">${list.map(m => `<div class="item mlRow" data-mlo="${m.r}:${m.id}" style="cursor:pointer;align-items:flex-start;flex-wrap:nowrap;${m.dir === "in" && !m.read ? "border-inline-start:4px solid var(--g);" : ""}">
+      <button class="btn sm" data-mlstar="${m.r}:${m.id}" title="تمييز" style="padding:2px 8px;${m.star ? "color:#B08D3C" : ""}">${m.star ? "★" : "☆"}</button>
+      <div class="grow" style="min-width:0;flex:1">
+        <div class="row" style="justify-content:space-between;gap:6px;flex-wrap:nowrap"><span style="min-width:0;flex:1;${m.dir === "in" && !m.read ? "font-weight:700" : ""};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.dir === "out" ? "إلى: " + (m.to || []).join("، ") : (m.fromName || m.from))}</span><span class="muted" style="white-space:nowrap;font-size:13px">${esc(mailWhen(m.at))}</span></div>
+        <div style="${m.dir === "in" && !m.read ? "font-weight:700" : ""};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(m.atts || []).length ? "📎 " : ""}${esc(m.subject || "(بدون عنوان)")}</div>
+        <div class="muted" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${!bx && boxes.length > 1 ? `<span class="pill" style="margin-inline-end:4px">${esc(MBOXES[m.box] ? MBOXES[m.box][1] : m.box)}</span>` : ""}${m.sus ? `<span class="pill a" style="margin-inline-end:4px">مشبوه</span>` : ""}${m.replied ? `<span class="pill p" style="margin-inline-end:4px">تم الرد</span>` : ""}${esc(m.snip || "")}</div>
+      </div></div>`).join("") || `<div class="card empty">${f === "in" ? "ما فيه رسائل واردة." : f === "out" ? "ما أرسلت شي للحين." : f === "star" ? "ما ميّزت أي رسالة." : "المحذوفات فاضية."}</div>`}</div>
+  ${all.length >= S.mailLim * 0.9 ? `<div style="text-align:center;margin:10px 0"><button class="btn" id="mlMore">عرض رسائل أقدم</button></div>` : ""}`;
+  $("#mlNew").onclick = () => { S.mailDraft = {box: bx || boxes[0], to: "", cc: "", subject: "", body: "", atts: []}; render(); };
+  el.querySelectorAll("[data-mlbx]").forEach(b => b.onclick = () => { S.mailBox = b.dataset.mlbx; render(); });
+  el.querySelectorAll("[data-mlf]").forEach(b => b.onclick = () => { S.mailF = b.dataset.mlf; render(); });
+  const q2 = $("#mlQ"); q2.oninput = () => { S.mailQ = q2.value; clearTimeout(S._mlT); S._mlT = setTimeout(() => { render(); const x = $("#mlQ"); if (x) { x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 300); };
+  el.querySelectorAll("[data-mlstar]").forEach(b => b.onclick = e => { e.stopPropagation(); const [r, id] = b.dataset.mlstar.split(":"), m = all.find(x => x.id === id && x.r === r); if (m) mailMark(m, {star: !m.star}); });
+  el.querySelectorAll("[data-mlo]").forEach(b => b.onclick = () => { const [r, id] = b.dataset.mlo.split(":"); S.mailOpen = {r, id}; S.mailBody = null; render(); window.scrollTo(0, 0); });
+  if ($("#mlMore")) $("#mlMore").onclick = () => { S.mailLim += 150; mailSubs(); };
+}
+function mailMark(m, ch){
+  Object.assign(m, ch);
+  return setDoc(doc(db, "mbox", m.r, "m", m.id), ch, {merge: true}).catch(e => { console.error(e); toast("ما انحفظ التغيير"); }).then(() => { if (!busyEditing()) render(); });
+}
+function mailView(el, m){
+  const key = m.r + ":" + m.id;
+  if (!S.mailBody || S.mailBody.key !== key) {
+    S.mailBody = {key, loading: true};
+    getDoc(doc(db, "mbox", m.r, "b", m.id)).then(x => { if (S.mailBody && S.mailBody.key === key) { S.mailBody = {key, ...(x.exists() ? x.data() : {text: ""})}; render(); } })
+      .catch(e => { console.error(e); if (S.mailBody && S.mailBody.key === key) { S.mailBody = {key, text: "تعذّر تحميل الرسالة."}; render(); } });
+  }
+  if (m.dir === "in" && !m.read) mailMark(m, {read: true});
+  const b = S.mailBody || {}, addr = (arr) => (arr || []).map(x => `<span dir="ltr">${esc(x)}</span>`).join("، ");
+  el.innerHTML = `<div class="card">
+    <div class="row" style="gap:6px;margin-bottom:10px"><button class="btn sm" id="mvBack">→ رجوع</button><span class="grow"></span>
+      ${m.trash ? `<button class="btn sm" id="mvRestore">استرجاع</button><button class="btn sm danger" id="mvKill">حذف نهائي</button>` : `<button class="btn sm" id="mvStar">${m.star ? "★ مميزة" : "☆ تمييز"}</button>${m.dir === "in" ? `<button class="btn sm" id="mvUnread">غير مقروءة</button>` : ""}<button class="btn sm danger" id="mvTrash">حذف</button>`}</div>
+    <h2 style="margin:0 0 8px">${esc(m.subject || "(بدون عنوان)")}</h2>
+    ${m.sus ? `<div class="notice" style="background:#fdecea;border-color:#f5c2c0;margin-bottom:8px">⚠️ هذي الرسالة ما اجتازت فحص المرسل، ممكن تكون احتيال. لا تفتح روابطها ولا مرفقاتها ولا ترسل أي بيانات.</div>` : ""}
+    <div class="muted" style="line-height:1.9">
+      <div><b>من:</b> ${m.dir === "out" ? esc(boxLabel(m.box)) : `${esc(m.fromName || "")} <span dir="ltr">&lt;${esc(m.from)}&gt;</span>`}</div>
+      <div><b>إلى:</b> ${addr(m.to)}</div>${(m.cc || []).length ? `<div><b>نسخة:</b> ${addr(m.cc)}</div>` : ""}
+      <div><b>التاريخ:</b> ${esc(mailWhenFull(m.at))}${myBoxes().length > 1 ? ` · <b>الصندوق:</b> ${esc(boxLabel(m.box))}` : ""}</div></div>
+    ${(m.atts || []).length ? `<div class="row" style="margin-top:10px;gap:6px">${m.atts.map((a, i) => a.rid ? `<button class="btn sm" data-mvatt="${i}">📎 ${esc(a.name)} <span class="muted">${esc(fmtSize(a.size))}</span></button>` : `<span class="pill">📎 ${esc(a.name)} (ما انحفظ)</span>`).join("")}</div>` : ""}
+    <div id="mvBody" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">${b.loading ? `<p class="muted">جاري التحميل…</p>` : b.html ? "" : `<div style="white-space:pre-wrap;word-break:break-word;line-height:1.8">${linkify(esc(b.text || ""))}</div>`}</div>
+    ${m.trash ? "" : `<div class="row" style="margin-top:14px;gap:6px"><button class="btn pri" id="mvRe">↩ رد</button>${m.dir === "in" && ((m.to || []).length + (m.cc || []).length) > 1 ? `<button class="btn" id="mvReAll">رد على الكل</button>` : ""}<button class="btn" id="mvFw">↪ إعادة توجيه</button></div>`}</div>`;
+  if (b.html) {
+    const f = document.createElement("iframe");
+    f.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox"); f.setAttribute("referrerpolicy", "no-referrer");
+    f.style.cssText = "width:100%;height:65vh;border:0;background:#fff;border-radius:8px";
+    f.srcdoc = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="script-src 'none'; form-action 'none'"><base target="_blank"><style>body{font-family:Tahoma,Arial,sans-serif;margin:8px;word-break:break-word}img{max-width:100%;height:auto}</style>` + b.html;
+    $("#mvBody").appendChild(f);
+  }
+  $("#mvBack").onclick = () => { S.mailOpen = null; render(); };
+  const reply = all => {
+    const me = [...myBoxes().map(x => x + "@" + MAIL_DOMAIN)], to = m.dir === "out" ? (m.to || []) : [m.replyTo || m.from];
+    const cc = all ? [...(m.to || []), ...(m.cc || [])].filter(x => !me.includes(x) && !to.includes(x)) : [];
+    S.mailDraft = {box: m.box, to: to.join(", "), cc: cc.join(", "), subject: /^(re|رد)\s*:/i.test(m.subject || "") ? m.subject : "رد: " + (m.subject || ""), body: "\n\n" + mailQuote(m, b), atts: [], replyId: m.id, replyR: m.r};
+    render(); window.scrollTo(0, 0);
+  };
+  if ($("#mvRe")) $("#mvRe").onclick = () => reply(false);
+  if ($("#mvReAll")) $("#mvReAll").onclick = () => reply(true);
+  if ($("#mvFw")) $("#mvFw").onclick = () => { S.mailDraft = {box: m.box, to: "", cc: "", subject: "إعادة توجيه: " + (m.subject || ""), body: "\n\n" + mailQuote(m, b, true), atts: (m.atts || []).filter(a => a.rid).map(a => ({...a, done: true}))}; render(); window.scrollTo(0, 0); };
+  if ($("#mvStar")) $("#mvStar").onclick = () => mailMark(m, {star: !m.star});
+  if ($("#mvUnread")) $("#mvUnread").onclick = () => { S.mailOpen = null; mailMark(m, {read: false}); };
+  if ($("#mvTrash")) $("#mvTrash").onclick = () => { S.mailOpen = null; mailMark(m, {trash: true}); toast("انتقلت للمحذوفات"); };
+  if ($("#mvRestore")) $("#mvRestore").onclick = () => { S.mailOpen = null; mailMark(m, {trash: false}); };
+  if ($("#mvKill")) $("#mvKill").onclick = async e => {
+    if (!e.target.dataset.sure) { e.target.dataset.sure = 1; e.target.textContent = "متأكد؟ ما ترجع"; return; }
+    e.target.disabled = true;
+    try { await mailApi({action: "del", r: m.r, id: m.id}); S.mailOpen = null; toast("انحذفت نهائياً"); render(); } catch (x) { console.error(x); e.target.disabled = false; toast("تعذّر الحذف"); }
+  };
+  el.querySelectorAll("[data-mvatt]").forEach(x => x.onclick = async () => {
+    x.disabled = true;
+    try { const j = await mailApi({action: "attGet", r: m.r, id: m.id, i: Number(x.dataset.mvatt)}); window.open(j.url, "_blank", "noopener"); } catch (e) { console.error(e); toast("تعذّر فتح المرفق"); } finally { x.disabled = false; }
+  });
+}
+const linkify = s => s.replace(/(https?:\/\/[^\s<>"']+)/g, u => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+function mailQuote(m, b, fw){
+  const txt = String(b.text || "").trim() || "";
+  const head = fw ? `---------- رسالة محوّلة ----------\nمن: ${m.fromName ? m.fromName + " " : ""}<${m.from}>\nالتاريخ: ${mailWhenFull(m.at)}\nالعنوان: ${m.subject || ""}\nإلى: ${(m.to || []).join(", ")}\n\n`
+    : `في ${mailWhenFull(m.at)} كتب ${m.fromName || m.from}:\n`;
+  const body = txt.slice(0, 4000);
+  return head + (fw ? body : body.split("\n").map(l => "> " + l).join("\n"));
+}
+function mailCompose(el){
+  const d = S.mailDraft, boxes = myBoxes();
+  if (!boxes.includes(d.box)) d.box = boxes[0];
+  const busy = d.atts.some(a => !a.done && !a.err);
+  el.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${d.replyId ? "رد" : "رسالة جديدة"}</h2><button class="btn sm" id="mcX">إلغاء</button></div>
+    <label for="mcB">من</label>${boxes.length > 1 ? `<select id="mcB">${boxes.map(b => `<option value="${b}" ${d.box === b ? "selected" : ""}>${esc(MBOXES[b][1])} — ${b}@${MAIL_DOMAIN}</option>`).join("")}</select>` : `<div dir="ltr" style="padding:6px 0">${esc(d.box)}@${MAIL_DOMAIN}</div>`}
+    <label for="mcTo">إلى</label><input type="text" id="mcTo" dir="ltr" inputmode="email" placeholder="name@example.com" value="${esc(d.to)}">
+    <label for="mcCc">نسخة (اختياري)</label><input type="text" id="mcCc" dir="ltr" inputmode="email" placeholder="افصل بين العناوين بفاصلة" value="${esc(d.cc)}">
+    <label for="mcS">العنوان</label><input type="text" id="mcS" maxlength="300" value="${esc(d.subject)}">
+    <label for="mcT">الرسالة</label><textarea id="mcT" rows="12" style="line-height:1.8">${esc(d.body)}</textarea>
+    <p class="muted" style="margin:4px 0 0">التوقيع (اسم القسم والمعهد والموقع) ينضاف تلقائياً تحت رسالتك.</p>
+    <div style="margin-top:10px"><label class="btn sm" for="mcF" style="cursor:pointer">📎 إرفاق ملف</label><input type="file" id="mcF" multiple style="display:none"> <span class="muted">حتى 20 ميجا للرسالة</span></div>
+    <div class="row" style="gap:6px;margin-top:8px">${d.atts.map((a, i) => `<span class="pill ${a.err ? "a" : a.done ? "p" : ""}" style="padding:4px 10px">📎 ${esc(a.name)} ${a.err ? "· فشل" : a.done ? `· ${esc(fmtSize(a.size))}` : `· ${a.pct || 0}%`} <a href="#" data-mcrm="${i}" style="margin-inline-start:6px">✕</a></span>`).join("")}</div>
+    <div class="row" style="margin-top:14px"><button class="btn pri" id="mcSend" ${busy ? "disabled" : ""}>إرسال</button>${busy ? `<span class="muted">انتظر يخلص رفع المرفقات…</span>` : ""}</div></div>`;
+  const sync = () => { d.to = $("#mcTo").value; d.cc = $("#mcCc").value; d.subject = $("#mcS").value; d.body = $("#mcT").value; if ($("#mcB")) d.box = $("#mcB").value; };
+  ["#mcTo", "#mcCc", "#mcS", "#mcT", "#mcB"].forEach(s => { const x = $(s); if (x) x.oninput = x.onchange = sync; });
+  if (!d.to) $("#mcTo").focus(); else if (d.replyId) { const t = $("#mcT"); t.focus(); t.setSelectionRange(0, 0); t.scrollTop = 0; }
+  $("#mcX").onclick = () => { if ((d.body || "").trim().length > 20 && !d._sure) { d._sure = 1; $("#mcX").textContent = "متأكد؟ تنحذف المسودة"; return; } S.mailDraft = null; render(); };
+  el.querySelectorAll("[data-mcrm]").forEach(x => x.onclick = e => { e.preventDefault(); sync(); d.atts.splice(Number(x.dataset.mcrm), 1); render(); });
+  $("#mcF").onchange = async e => {
+    sync(); const files = [...e.target.files]; e.target.value = "";
+    for (const file of files) {
+      const used = d.atts.filter(a => !a.err).reduce((n, a) => n + (a.size || 0), 0);
+      if (used + file.size > 20 * 1024 ** 2) { toast(`«${file.name}» يخلي المرفقات أكبر من 20 ميجا`); continue; }
+      const a = {name: file.name, type: file.type || "application/octet-stream", size: file.size, pct: 0}; d.atts.push(a); render();
+      try {
+        const t = await mailApi({action: "attUp", box: d.box, name: a.name, type: a.type, size: a.size});
+        await new Promise((ok, no) => { const x = new XMLHttpRequest(); x.open("PUT", t.url); x.upload.onprogress = ev => { if (ev.lengthComputable) { a.pct = Math.floor(ev.loaded / ev.total * 100); const p = S.mailDraft === d && !busyEditing(); if (p) render(); } }; x.onload = () => x.status === 200 ? ok() : no(new Error("up " + x.status)); x.onerror = () => no(new Error("network")); x.send(file); });
+        a.rid = t.rid; a.done = true;
+      } catch (x) { console.error(x); a.err = true; toast("تعذّر رفع " + a.name); }
+      if (S.mailDraft === d) render();
+    }
+  };
+  $("#mcSend").onclick = async e => {
+    sync();
+    const split = v => v.split(/[,;،\s]+/).map(x => x.trim()).filter(Boolean), to = split(d.to), cc = split(d.cc), bad = [...to, ...cc].find(x => !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(x));
+    if (!to.length) return toast("اكتب إيميل المستلم"); if (bad) return toast("هذا العنوان غير صحيح: " + bad);
+    if (!d.subject.trim() && !d._noSubj) { d._noSubj = 1; return toast("ما كتبت عنوان. اضغط إرسال مرة ثانية للإرسال بدونه"); }
+    if (d.atts.some(a => a.err)) return toast("احذف المرفق اللي فشل رفعه أول");
+    e.target.disabled = true; e.target.textContent = "جاري الإرسال…";
+    try {
+      await mailApi({action: "send", box: d.box, to, cc, subject: d.subject.trim(), body: d.body, atts: d.atts.filter(a => a.done).map(a => ({rid: a.rid, name: a.name, type: a.type})), ...(d.replyId ? {replyId: d.replyId, replyR: d.replyR} : {})});
+      logAction("إرسال بريد", `${d.box}@ ← ${to.join("، ")}`);
+      S.mailDraft = null; S.mailOpen = null; S.mailF = "out"; toast("انرسلت ✓"); render();
+    } catch (x) { console.error(x); e.target.disabled = false; e.target.textContent = "إرسال"; toast("ما انرسلت: " + (MAIL_ERR[x.code] || "حاول مرة ثانية")); }
+  };
+}
 /* ---------- internal messages between general administration, academic affairs and finance ---------- */
 const MEMO_ROLES = ["admin", "academic", "finance"];
 const memoUnread = () => (S.memos || []).filter(m => m.to === S.adminRole && !m.readAt);
@@ -3935,11 +4199,11 @@ const paysOf = num => (S.pays || []).filter(p => p.num === num);
 function adminFinance(el){
   const t = S.finTab || "sum";
   const nW = fReqWaiting();
-  const tabs = [["sum", "الملخص"], ["req", "طلبات الطلاب" + (nW ? ` (${nW})` : "")], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"], ["memo", "المراسلات" + memoBadge()]] : []), ["set", "الإعدادات"]];
+  const tabs = [["sum", "الملخص"], ["req", "طلبات الطلاب" + (nW ? ` (${nW})` : "")], ["acc", "حسابات الطلاب"], ["pay", "الدفعات"], ["rcpt", "الإيصالات"], ["late", "المتأخرين"], ["exp", "المصروفات"], ["sal", "رواتب المدربين"], ["part", "الشركاء والعمولات"], ["rep", "التقرير الشهري"], ...(FIN() ? [["sign", "طلبات التوقيع"], ["memo", "المراسلات" + memoBadge()], ["mail", "البريد" + mailBadge()]] : []), ["set", "الإعدادات"]];
   el.innerHTML = `<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k, v]) => `<button class="tab ${t === k ? "on" : ""}" data-ft="${k}">${v}</button>`).join("")}</div></div><div id="fb"></div>`;
   el.querySelectorAll("[data-ft]").forEach(b => b.onclick = () => { S.finTab = b.dataset.ft; render(); });
   if (!S.finSet) { $("#fb").innerHTML = `<div class="card"><p class="muted" style="margin:0">جاري التحميل…</p></div>`; return; }
-  ({sum: finSummary, req: finReqTab, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, memo: memosTab, set: finSettings})[t]($("#fb"));
+  ({sum: finSummary, req: finReqTab, acc: finAccounts, pay: finPayments, rcpt: finReceipts, late: finLate, exp: finExpenses, sal: finSalaries, part: finPartners, rep: finReport, sign: signRequests, memo: memosTab, mail: mailTab, set: finSettings})[t]($("#fb"));
 }
 function finRows(){
   return Object.values(S.students).map(s => { const acc = (S.finAcc || {})[s.num]; return {s, acc, st: acc ? accStatus(acc, paysOf(s.num)) : {net: 0, paid: 0, remaining: 0, overdue: 0, status: "none"}}; });
