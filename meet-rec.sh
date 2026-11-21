@@ -113,7 +113,7 @@ class H(BaseHTTPRequestHandler):
             self.end_headers(); return
         if r == "/load":
             # people in the classroom right now, read from the bridge's own metrics (for the automatic switch to Teams)
-            n, used = 0, None
+            n, used, vals = 0, None, {}
             try:
                 req = Request("http://127.0.0.1:8080/metrics", headers={"Accept": "text/plain"})
                 txt = urlopen(req, timeout=2).read().decode("utf-8", "replace")
@@ -132,7 +132,21 @@ class H(BaseHTTPRequestHandler):
                 if used is None: used = "none: " + ",".join(sorted(x for x in vals if "endpoint" in x))[:200]
             except Exception as e:
                 used = "error: " + str(e)[:120]
-            return self.send(200, {"participants": n, "metric": used})
+            out = {"participants": n, "metric": used, "conferences": int(vals.get("jitsi_jvb_conferences", 0))}
+            # server health for the portal: processor, memory and disk, in percent
+            try: out["cpu"] = round(os.getloadavg()[0] / (os.cpu_count() or 1) * 100)
+            except Exception: pass
+            try:
+                mi = {}
+                for line in open("/proc/meminfo"):
+                    k, v = line.split(":", 1); mi[k] = int(v.split()[0])
+                out["mem"] = round((1 - mi["MemAvailable"] / mi["MemTotal"]) * 100); out["memGB"] = round(mi["MemTotal"] / 1024 ** 2, 1)
+            except Exception: pass
+            try:
+                u = shutil.disk_usage(ROOT); out["disk"] = round((u.total - u.free) / u.total * 100); out["diskFreeGB"] = round(u.free / 1024 ** 3); out["diskGB"] = round(u.total / 1024 ** 3)
+            except Exception: pass
+            out["cores"] = os.cpu_count() or 1
+            return self.send(200, out)
         if r == "/stats":
             if not self.t("stats"): return self.send(403, {"error": "ticket"})
             u = shutil.disk_usage(ROOT)

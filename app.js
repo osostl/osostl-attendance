@@ -5,10 +5,14 @@ import { firebaseConfig } from "./config.js";
 
 /* ---------- constants ---------- */
 const DOMAIN = "osostl.local";                       // login emails are internal, never mailed
-const ROLE_EMAIL = {admin: "admin@" + DOMAIN, academic: "acadmic@" + DOMAIN, finance: "finance@" + DOMAIN, auditor: "audit@" + DOMAIN};
-const ROLES = {admin: "الإدارة", academic: "مسؤول الشؤون الأكاديمية", finance: "المالية", auditor: "جهة رقابية (قراءة فقط)"};
+const MAIL_STAFF = ["admission", "business", "hr"];      // accounts that only use their own mailbox
+const ROLE_EMAIL = {admin: "admin@" + DOMAIN, academic: "acadmic@" + DOMAIN, finance: "finance@" + DOMAIN, auditor: "audit@" + DOMAIN,
+  ...Object.fromEntries(MAIL_STAFF.map(r => [r, `m-${r}@` + DOMAIN]))};
+const ROLES = {admin: "الإدارة", academic: "مسؤول الشؤون الأكاديمية", finance: "المالية", auditor: "جهة رقابية (قراءة فقط)",
+  admission: "القبول والتسجيل وخدمة العملاء", business: "الشراكات وقطاع الشركات", hr: "الموارد البشرية"};
 const RO = () => S.adminRole === "auditor";
 const FIN = () => S.adminRole === "finance";
+const MAILONLY = () => MAIL_STAFF.includes(S.adminRole);
 const SEES_FIN = () => S.adminRole === "finance" || S.adminRole === "admin";
 const STATUS = {p: "حاضر", l: "متأخر", a: "غائب", e: "مستأذن"};
 const GENDER = {m: "طالب", f: "طالبة"};
@@ -62,6 +66,13 @@ setInterval(() => {
     _lastAct = Date.now(); try { sessionStorage.setItem("idleOut", "1"); } catch {} logout();
   }
 }, 60000);
+/* the general administration and academic affairs hear about a struggling classroom server even when on another tab */
+setInterval(async () => {
+  if (S.view !== "admin" || !["admin", "academic"].includes(S.adminRole) || !MEET() || S.aTab === "live") return;
+  const x = await srvHealth(); if (srvLevel(x) < 2 || Date.now() - (S._srvWarned || 0) < 10 * 60e3) return;
+  S._srvWarned = Date.now();
+  toast(x.down ? "⚠️ سيرفر القاعة ما يرد. افتح «المحاضرات والتسجيلات»" : "⚠️ ضغط عالي على سيرفر القاعة. افتح «المحاضرات والتسجيلات» وانقل لـ Teams");
+}, 120000);
 try { if (sessionStorage.getItem("lockOut")) { sessionStorage.removeItem("lockOut"); setTimeout(() => toast("انتهت جلستك: الإدارة غيّرت رمز الحساب أو أوقفته"), 1500); } } catch {}
 try { if (sessionStorage.getItem("idleOut")) { sessionStorage.removeItem("idleOut"); setTimeout(() => toast("طلعت من البوابة تلقائياً بعد 30 دقيقة بدون نشاط"), 1500); } } catch {}
 /* sign out and wipe the cached copy, so nothing stays on a shared computer */
@@ -319,12 +330,12 @@ async function reloginAdmin(code){
 function secCard(){
   const st = S._secSt, fmt = ms => ms ? new Date(ms).toLocaleString("ar-SA-u-ca-gregory", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit"}) : "—";
   const rows = st ? Object.entries(st.roles).map(([r, x]) => `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:180px"><div class="t">${esc(ROLES[r])}</div><div class="muted">${!x.exists ? "الحساب مو موجود" : `آخر دخول: ${esc(fmt(x.lastLogin))}${x.lockedAt ? ` · آخر تغيير أمان: ${esc(fmt(x.lockedAt * 1000))}` : ""}`}</div></div>
-    ${x.exists ? `<span class="pill ${x.disabled ? "a" : "p"}">${x.disabled ? "موقوف" : "مفعّل"}</span><button class="btn sm" data-snew="${r}">رمز جديد</button>${r === "admin" ? "" : x.disabled ? `<button class="btn sm" data-sen="${r}">تفعيل</button>` : `<button class="btn sm danger" data-sdis="${r}">إيقاف</button>`}` : ""}</div>`).join("") : `<div class="muted">جاري التحميل…</div>`;
+    ${x.exists ? `<span class="pill ${x.disabled ? "a" : "p"}">${x.disabled ? "موقوف" : "مفعّل"}</span><button class="btn sm" data-snew="${r}">رمز جديد</button>${r === "admin" ? "" : x.disabled ? `<button class="btn sm" data-sen="${r}">تفعيل</button>` : `<button class="btn sm danger" data-sdis="${r}">إيقاف</button>`}` : MAIL_STAFF.includes(r) ? `<button class="btn sm pri" data-snew="${r}">إنشاء الحساب</button>` : ""}</div>`).join("") : `<div class="muted">جاري التحميل…</div>`;
   return `<div class="card" id="secCard"><h2>أمان حسابات الإدارات</h2>
     <p class="muted" style="margin-top:0">لو شكّيت إن أحد دخل حساب إدارة بدون إذن، اضغط «رمز جديد» أو «إيقاف». الرمز القديم يوقف، وكل من كان داخل بالحساب يطلع فوراً من كل الأجهزة.</p>
     <div class="list">${rows}</div>
     <button class="btn danger" id="secAll" style="margin-top:10px;width:100%">طوارئ: إيقاف كل حسابات الإدارات</button>
-    <p class="muted" style="margin:6px 0 0">يوقف حسابات الشؤون الأكاديمية والمالية والجهة الرقابية، ويغيّر رمز الإدارة العامة. وبعدين ترجّع كل حساب بـ «تفعيل» و«رمز جديد».</p></div>`;
+    <p class="muted" style="margin:6px 0 0">يوقف كل حسابات الإدارات والبريد (الأكاديمية والمالية والجهة الرقابية والقبول وخدمة العملاء والشراكات والموارد البشرية)، ويغيّر رمز الإدارة العامة. وبعدين ترجّع كل حساب بـ «تفعيل» و«رمز جديد».</p></div>`;
 }
 function bindSecCard(el){
   if (!$("#secCard")) return;
@@ -385,6 +396,57 @@ function closeRoom(){
   const ra = $("#recAskW"); if (ra) ra.remove();
   const w = $("#roomWrap"); if (w) w.remove(); document.body.style.overflow = "";
 }
+/* ---------- classroom server health: people in the room, processor, memory, disk ---------- */
+async function srvHealth(){
+  const d = MEET(); if (!d) return null;
+  try { const c = new AbortController(); setTimeout(() => c.abort(), 4000); const j = await (await fetch(`https://${d}/osos-load`, {signal: c.signal, cache: "no-store"})).json(); S._srv = {at: Date.now(), ...j}; }
+  catch { S._srv = {at: Date.now(), down: true}; }
+  return S._srv;
+}
+const srvMax = () => Number((S.site || {}).meetMax) || 180;
+function srvLevel(x){   // 0 fine, 1 watch, 2 act now
+  if (!x) return 0; if (x.down) return 2;
+  const p = (x.participants || 0) / srvMax() * 100;
+  const worst = Math.max(p, x.cpu || 0, x.mem || 0, x.disk || 0);
+  return worst >= 85 ? 2 : worst >= 65 ? 1 : 0;
+}
+const SRV_COL = ["#1F7A4D", "#C98A00", "#C0392B"];
+function srvCard(){
+  const x = S._srv, col = v => SRV_COL[v >= 85 ? 2 : v >= 65 ? 1 : 0];
+  const bar = (label, pct, txt) => `<div style="margin:8px 0"><div class="row" style="justify-content:space-between"><span>${label}</span><b style="color:${col(pct)}">${txt}</b></div><div style="height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin-top:4px"><div style="width:${Math.min(100, Math.max(2, pct))}%;height:100%;background:${col(pct)}"></div></div></div>`;
+  const lv = srvLevel(x), force = !!(S.site || {}).meetForceTeams, nOsos = (S.lives || []).filter(l => liveOn(l) && l.mode === "osos").length;
+  const head = !x ? `<p class="muted">جاري القراءة…</p>` : x.down ? `<div class="notice" style="background:#fdecea;border-color:#f5c2c0">⚠️ سيرفر القاعة ما يرد. أي محاضرة جديدة تتحول لـ Teams تلقائياً، وانقل الشغالة الحين.</div>`
+    : lv === 2 ? `<div class="notice" style="background:#fdecea;border-color:#f5c2c0">⚠️ الضغط عالي على السيرفر. انقل المحاضرات لـ Teams قبل ما يتأثر الصوت والصورة.</div>`
+    : lv === 1 ? `<div class="notice">انتبه: السيرفر قرّب من حده. راقبه، وإذا زاد انقل بعض المحاضرات لـ Teams.</div>` : `<div class="muted">✓ السيرفر مرتاح.</div>`;
+  const pp = x && !x.down ? Math.round((x.participants || 0) / srvMax() * 100) : 0;
+  return `<div class="card" id="srvCard" style="border-color:${SRV_COL[lv]}"><div class="row" style="justify-content:space-between"><h2 style="margin:0">حالة سيرفر القاعة</h2><span class="muted" style="font-size:13px">${x ? "آخر قراءة " + esc(new Date(x.at).toLocaleTimeString("ar-SA-u-nu-latn", {hour: "numeric", minute: "2-digit", second: "2-digit"})) : ""} <a href="#" id="srvRe">تحديث</a></span></div>
+    <div style="margin-top:8px">${head}</div>
+    ${x && !x.down ? bar("الموجودين في القاعة الحين", pp, `${x.participants || 0} من ${srvMax()}${x.conferences ? ` · ${x.conferences} محاضرة` : ""}`)
+      + (x.cpu != null ? bar("المعالج", x.cpu, x.cpu + "%") : "") + (x.mem != null ? bar("الذاكرة", x.mem, x.mem + "%") : "")
+      + (x.disk != null ? bar("التخزين (التسجيلات والمرفقات)", x.disk, `${x.disk}% · باقي ${x.diskFreeGB} من ${x.diskGB} جيجا`) : "") : ""}
+    ${RO() ? "" : `<div class="row" style="margin-top:10px;gap:6px">${nOsos ? `<button class="btn sm ${lv === 2 ? "danger" : ""}" id="srvAll">نقل كل المحاضرات الشغالة لـ Teams (${nOsos})</button>` : ""}
+      <button class="btn sm ${force ? "pri" : ""}" id="srvForce">${force ? "✓ القاعة موقفة: المحاضرات الجديدة على Teams (اضغط للتشغيل)" : "إيقاف القاعة مؤقتاً: المحاضرات الجديدة تفتح على Teams"}</button></div>`}
+    <p class="muted" style="margin:8px 0 0;font-size:13px">أخضر مرتاح، برتقالي قرّب من الحد (65%)، أحمر انقل لـ Teams (85%). الحد الأعلى للحاضرين تعدّله من «النظام» ← القاعة الافتراضية.</p></div>`;
+}
+function bindSrvCard(el){
+  if (!S._srvTimer) S._srvTimer = setInterval(() => { if (S.view !== "admin" || S.aTab !== "live") { clearInterval(S._srvTimer); S._srvTimer = null; return; } srvHealth().then(() => { const c = $("#srvCard"); if (c && !busyEditing()) render(); }); }, 20000);
+  if (!S._srv || Date.now() - S._srv.at > 20000) srvHealth().then(() => { if (S.aTab === "live" && !busyEditing()) render(); });
+  const re = el.querySelector("#srvRe"); if (re) re.onclick = e => { e.preventDefault(); srvHealth().then(() => render()); };
+  const all = el.querySelector("#srvAll");
+  if (all) all.onclick = async () => {
+    if (!all.dataset.sure) { all.dataset.sure = 1; all.textContent = "متأكد؟ كل الطلاب ينتقلون لـ Teams"; return; }
+    all.disabled = true; let moved = 0, noLink = [];
+    for (const l of (S.lives || []).filter(x => liveOn(x) && x.mode === "osos")) {
+      const g = S.groups[l.gid]; if (!g) continue;
+      if (!validLink(g.meetLink)) { noLink.push(g.course || g.id); continue; }
+      if (await setLive(g, "teams")) moved++;
+    }
+    logAction("نقل كل المحاضرات لـ Teams", `${moved} محاضرة`);
+    toast(`انتقلت ${moved} محاضرة لـ Teams${noLink.length ? ` · ما لها رابط Teams: ${noLink.join("، ")}` : ""}`); render();
+  };
+  const fo = el.querySelector("#srvForce");
+  if (fo) fo.onclick = () => saveSite({meetForceTeams: !(S.site || {}).meetForceTeams}, "إيقاف/تشغيل القاعة").then(() => render());
+}
 /* administration and academic affairs: every lecture running now, to watch, move or end */
 function liveTab(el){
   if (!S._liveSub) S._liveSub = onSnapshot(collection(db, "live"), x => { S.lives = x.docs.map(d => d.data()); if (S.aTab === "live" && !busyEditing()) render(); }, () => {});
@@ -396,7 +458,7 @@ function liveTab(el){
   const endedNoRec = (S.lives || []).filter(l => !l.on && l.mode === "osos" && day(l.endedAt || l.at) === today() && !recToday(l.gid));
   const allRecs = Object.values(S.groups).filter(g => (g.recordings || []).length).sort((a, b) => (a.course || "").localeCompare(b.course || "", "ar"));
   const rf = S._recFilter || "";
-  el.innerHTML = `<div class="card"><h2>المحاضرات الآن (${list.length})</h2><p class="muted" style="margin:0">تشوف مين دخل من الطلاب بدون ما تدخل القاعة. ولو دخلت كمشرف، تدخل والكاميرا والمايك مطفيين، واسمك يظهر في قائمة المشاركين «الإدارة». وتقدر تنقل المحاضرة لـ Teams أو تنهيها، وداخل القاعة تكتم أو تطرد أي مشارك.</p></div>
+  el.innerHTML = srvCard() + `<div class="card"><h2>المحاضرات الآن (${list.length})</h2><p class="muted" style="margin:0">تشوف مين دخل من الطلاب بدون ما تدخل القاعة. ولو دخلت كمشرف، تدخل والكاميرا والمايك مطفيين، واسمك يظهر في قائمة المشاركين «الإدارة». وتقدر تنقل المحاضرة لـ Teams أو تنهيها، وداخل القاعة تكتم أو تطرد أي مشارك.</p></div>
   <div class="list">${list.map(l => { const g = S.groups[l.gid] || {}; return `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(g.course || l.course || l.gid)}</div><div class="muted">${esc(tName(g.trainerId || ""))} · بدأت ${esc(fmtTime(new Date(l.at).toTimeString().slice(0, 5)))} · ${l.mode === "teams" ? "على Teams" : "قاعة المعهد"}</div>
     ${(js => js.length ? `<details style="margin-top:4px"><summary class="muted" style="cursor:pointer">دخل ${js.length} من ${(g.memberNums || []).length} طالب</summary><div class="muted" style="margin-top:4px">${js.map(j => `${esc((S.students[j.num] || {}).name || j.num)} (${esc(fmtTime(j.time))})`).join("، ")}</div></details>` : `<div class="muted">ما دخل أحد من الطلاب للحين</div>`)(joined(l.gid))}</div>
     ${l.mode === "osos" ? `<button class="btn sm pri" data-lvw="${esc(l.gid)}">دخول كمشرف</button>` : validLink(g.meetLink) ? `<a class="btn sm" style="text-decoration:none" href="${esc(g.meetLink)}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
@@ -407,6 +469,7 @@ function liveTab(el){
     <input type="search" id="rcF" placeholder="ابحث باسم المقرر أو المدرب" value="${esc(rf)}" style="width:100%;margin-bottom:8px">
     <div class="list">${allRecs.filter(g => !rf || (g.course || "").includes(rf) || tName(g.trainerId || "").includes(rf)).map(g => `<details class="item" style="display:block"><summary style="cursor:pointer"><b>${esc(g.course || g.id)}</b> <span class="muted">· ${esc(tName(g.trainerId || ""))} · ${(g.recordings || []).length} تسجيل</span></summary>
       ${(g.recordings || []).map((r, i) => `<div class="row" style="margin-top:6px;flex-wrap:wrap"><span class="grow">${esc(r.date)} · ${esc(r.title)}${r.size ? ` <span class="muted">(${esc(fmtSize(r.size))})</span>` : ""}${recToday(g.id) && r.date === today() ? ` <span class="pill p">اليوم</span>` : ""}</span><button class="btn sm" data-arp="${esc(g.id)}:${i}">تشغيل</button>${RO() ? "" : `<button class="btn sm danger" data-ard="${esc(g.id)}:${i}">حذف</button>`}</div>`).join("")}</details>`).join("") || `<div class="empty muted">ما فيه تسجيلات للحين.</div>`}</div></div>`;
+  bindSrvCard(el);
   const rcF = el.querySelector("#rcF"); if (rcF) rcF.oninput = () => { S._recFilter = rcF.value.trim(); clearTimeout(S._rcT); S._rcT = setTimeout(() => { render(); const x = $("#rcF"); if (x) { x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 300); };
   const pick = v => { const [gid, i] = v.split(":"), g = S.groups[gid]; return g ? [g, (g.recordings || [])[Number(i)], Number(i)] : []; };
   el.querySelectorAll("[data-arp]").forEach(b => b.onclick = () => { const [g, r] = pick(b.dataset.arp); if (r) playRec(g, r); });
@@ -511,8 +574,17 @@ if (!configured) {
 }
 
 function sub(q, fn){ S.subs.push(onSnapshot(q, fn, err => fail(err))); }
+function watchStaffLock(){
+  S.subs.push(onSnapshot(ref("public/staffLock"), async snap => {
+    if (S._selfRotate || !S.authUser) return;
+    const t = (snap.exists() && snap.data()[S.adminRole]) || 0; if (!t) return;
+    let at = 0; try { at = Number((await S.authUser.getIdTokenResult()).claims.auth_time || 0); } catch {}
+    if (t >= at) { try { sessionStorage.setItem("lockOut", "1"); } catch {} logout(); }
+  }, () => {}));
+}
 function startData(){
   S.loaded = {trainers: false, groups: false};
+  if (S.role === "admin" && MAILONLY()) { S.loaded = {trainers: true, groups: true}; watchStaffLock(); S.mail = null; mailSubs(); return; }
   const annDocs = S.role === "admin" ? ["trainers", "students"] : S.role === "trainer" ? ["trainers"] : ["students"];
   annDocs.forEach(k => S.subs.push(onSnapshot(ref("ann/" + k), snap => { S.ann[k] = (snap.exists() && snap.data().items) || []; renderAnn(); }, () => {})));
   sub(collection(db, "trainers"), snap => {
@@ -546,12 +618,7 @@ function startData(){
   if (S.role === "admin") {
     S.subs.push(onSnapshot(ref("public/disabled"), snap => { S.disabled = (snap.exists() && snap.data().list) || {}; afterData(); }, () => {}));
     // emergency lock: a session that signed in before its role's lock time leaves at once
-    S.subs.push(onSnapshot(ref("public/staffLock"), async snap => {
-      if (S._selfRotate || !S.authUser) return;
-      const t = (snap.exists() && snap.data()[S.adminRole]) || 0; if (!t) return;
-      let at = 0; try { at = Number((await S.authUser.getIdTokenResult()).claims.auth_time || 0); } catch {}
-      if (t >= at) { try { sessionStorage.setItem("lockOut", "1"); } catch {} logout(); }
-    }, () => {}));
+    watchStaffLock();
     if (!RO()) { S.mail = null; mailSubs(); }
     if (!RO()) S.subs.push(onSnapshot(collection(db, "memos"), snap => { S.memos = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
     if (!FIN()) S.subs.push(onSnapshot(collection(db, "acReqs"), snap => { S.aReqs = snap.docs.map(d => ({id: d.id, ...d.data()})); afterData(); }, () => {}));
@@ -583,9 +650,9 @@ function stopAll(){ S.subs.forEach(u => u()); S.subs = []; S.courses = null; S._
 function afterData(){
   if (S._finModal && $("#modal").classList.contains("on") && S._finDraw && !busyEditing()) S._finDraw();
   if (S._loginLog && S.loaded.trainers) { S._loginLog = false; logAction("تسجيل دخول", ""); }
-  if (S.role === "admin") syncTrainerNumbers();
+  if (S.role === "admin" && !MAILONLY()) syncTrainerNumbers();
   if (SEES_FIN()) syncFinClear();
-  if (S.role === "admin" && !RO() && !FIN()) { syncPublicStats(); syncIdCards(); }
+  if (S.role === "admin" && !RO() && !FIN() && !MAILONLY()) { syncPublicStats(); syncIdCards(); }
   if (S.view === "trainer" && S.tGroup && !S.groups[S.tGroup]) { S.tGroup = null; stopAtt(); }
   if (S.view === "admin" && $("#modal").classList.contains("on") && S._modalGroup) renderModalStudents();
   if (busyEditing()) return;
@@ -1934,6 +2001,7 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
+  if (MAILONLY()) { app.innerHTML = `<div id="ab"></div>`; mailTab($("#ab")); return; }
   const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["areqs","طلبات الطلاب" + ((S.aReqs || []).some(r => r.status === "new") ? ` (${S.aReqs.filter(r => r.status === "new").length})` : "")],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["memos","المراسلات" + memoBadge()],["mail","البريد" + mailBadge()],...(MEET() ? [["live","المحاضرات والتسجيلات"]] : []),["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
@@ -2940,8 +3008,8 @@ function adminFollow(el){
    Messages arrive through Cloudflare Email Routing into the push service, which stores them in mbox/{role}/m (list) and mbox/{role}/b (body). */
 const MAIL_DOMAIN = "osustl.com";
 const MBOXES = {ceo: ["admin", "الإدارة العامة"], info: ["admin", "الإيميل العام"], academic: ["academic", "الشؤون الأكاديمية"], finance: ["finance", "المالية"],
-  admission: ["admin", "القبول والتسجيل"], support: ["admin", "خدمة العملاء"], hr: ["admin", "الموارد البشرية"], business: ["admin", "قطاع الشركات"]};
-const MAIL_ROLES_ALL = ["admin", "academic", "finance"];
+  admission: ["admission", "القبول والتسجيل"], support: ["admission", "خدمة العملاء"], hr: ["hr", "الموارد البشرية"], business: ["business", "قطاع الشركات"]};
+const MAIL_ROLES_ALL = ["admin", "academic", "finance", ...MAIL_STAFF];
 const myMailRoles = () => S.adminRole === "admin" ? MAIL_ROLES_ALL : MAIL_ROLES_ALL.includes(S.adminRole) ? [S.adminRole] : [];
 const myBoxes = () => Object.keys(MBOXES).filter(b => S.adminRole === "admin" || MBOXES[b][0] === S.adminRole);
 const mailAll = () => Object.values(S.mail || {}).flat().sort((a, b) => (b.at || "").localeCompare(a.at || ""));
