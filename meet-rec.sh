@@ -23,6 +23,7 @@ cat > /opt/osos-rec/server.py <<'PY'
 import hmac, hashlib, json, base64, os, re, shutil, time, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
+from urllib.request import urlopen
 
 ROOT = "/var/osos-rec"
 SECRET = open("/etc/osos-rec/secret").read().strip().encode()
@@ -110,6 +111,22 @@ class H(BaseHTTPRequestHandler):
             else:
                 self.send_header("Content-Type", "video/webm")
             self.end_headers(); return
+        if r == "/load":
+            # people in the classroom right now, read from the bridge's own metrics (for the automatic switch to Teams)
+            n, used = 0, None
+            try:
+                txt = urlopen("http://127.0.0.1:8080/metrics", timeout=2).read().decode("utf-8", "replace")
+                vals = {}
+                for line in txt.splitlines():
+                    if line.startswith("#") or " " not in line: continue
+                    k, v = line.rsplit(" ", 1); k = k.split("{")[0]
+                    try: vals[k] = vals.get(k, 0) + float(v)
+                    except ValueError: pass
+                for k in ("jitsi_jvb_local_endpoints", "jitsi_jvb_endpoints", "jitsi_jvb_current_endpoints", "jitsi_jvb_participants"):
+                    if k in vals: n, used = int(vals[k]), k; break
+            except Exception:
+                pass
+            return self.send(200, {"participants": n, "metric": used})
         if r == "/stats":
             if not self.t("stats"): return self.send(403, {"error": "ticket"})
             u = shutil.disk_usage(ROOT)
@@ -185,6 +202,10 @@ if "/_osos_rec/" not in s:
     if not m: sys.exit("place not found in nginx config")
     s = s[:m.start()] + blk + s[m.start():]
     open(p, 'w').write(s); print("recording paths added")
+s = open(p).read()
+if "8080/colibri/stats" in s:
+    s = s.replace("proxy_pass http://127.0.0.1:8080/colibri/stats;", "proxy_pass http://127.0.0.1:8090/load;")
+    open(p, 'w').write(s); print("load counter moved to the bridge metrics")
 PY
 nginx -t
 systemctl reload nginx
@@ -194,6 +215,7 @@ sleep 2
 printf "%-12s %s\n" "osos-rec" "$(systemctl is-active osos-rec)"
 printf "%-12s %s\n" "nginx" "$(systemctl is-active nginx)"
 echo "Ticket check (403 is correct here): $(curl -s -o /dev/null -w '%{http_code}' https://$DOMAIN/rec/stats)"
+echo "Load counter: $(curl -s -m 3 https://$DOMAIN/osos-load)"
 df -h /var/osos-rec | tail -1
 echo
 echo "DONE. Recordings are stored in /var/osos-rec"
