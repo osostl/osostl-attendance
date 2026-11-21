@@ -49,6 +49,11 @@ curl -fsSL https://prosody.im/files/prosody-debian-packages.key | gpg --dearmor 
 echo "deb [signed-by=/usr/share/keyrings/prosody-keyring.gpg] http://packages.prosody.im/debian $(. /etc/os-release; echo "$VERSION_CODENAME") main" > /etc/apt/sources.list.d/prosody.list
 apt-get update -y
 
+# Prosody 13 (from prosody.im) refuses to run on Lua 5.1: make Lua 5.4 the system interpreter first
+DEBIAN_FRONTEND=noninteractive apt-get install -y lua5.4
+update-alternatives --install /usr/bin/lua lua-interpreter /usr/bin/lua5.4 140 || true
+update-alternatives --set lua-interpreter /usr/bin/lua5.4 || true
+
 say "4/7 Installing Jitsi Meet (a few minutes)"
 echo "jitsi-videobridge2 jitsi-videobridge/jvb-hostname string $DOMAIN" | debconf-set-selections
 echo "jitsi-meet-prosody jitsi-videobridge/jvb-hostname string $DOMAIN" | debconf-set-selections
