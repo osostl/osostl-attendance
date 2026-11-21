@@ -92,6 +92,152 @@ function notify(kind, id, delay = 0){
   NT[k] = setTimeout(() => { delete NT[k]; notifyNow(kind, id).catch(() => {}); }, delay);   // attendance waits a little, so a trainer's quick corrections become one notification
 }
 addEventListener("pagehide", () => Object.keys(NT).forEach(k => { clearTimeout(NT[k]); delete NT[k]; const [kind, ...rest] = k.split("/"); notifyNow(kind, rest.join("/")).catch(() => {}); }));
+/* ---------- virtual classroom: Jitsi on the institute's own server, Teams as the fallback ----------
+   The worker hands out a signed pass per course group (trainer and administration = moderators; a student
+   only while the lecture is live). live/{gid} says whether a lecture is running and where (osos | teams). */
+const MEET = () => ((S.site || {}).meetDomain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+const LIVE_MS = 5 * 3600e3;
+const liveOn = l => !!(l && l.on && Date.now() - new Date(l.at).getTime() < LIVE_MS);
+let _jitsiP = null;
+function loadJitsi(domain){
+  if (window.JitsiMeetExternalAPI) return Promise.resolve(window.JitsiMeetExternalAPI);
+  if (_jitsiP) return _jitsiP;
+  _jitsiP = new Promise((ok, no) => {
+    const sc = document.createElement("script"), t = setTimeout(() => { sc.remove(); no(new Error("timeout")); }, 7000);
+    sc.src = `https://${domain}/external_api.js`;
+    sc.onload = () => { clearTimeout(t); window.JitsiMeetExternalAPI ? ok(window.JitsiMeetExternalAPI) : no(new Error("no api")); };
+    sc.onerror = () => { clearTimeout(t); sc.remove(); no(new Error("load")); };
+    document.head.appendChild(sc);
+  }).catch(e => { _jitsiP = null; throw e; });
+  return _jitsiP;
+}
+async function meetLoad(domain){   // people in all rooms right now; 0 when unknown
+  try { const c = new AbortController(); setTimeout(() => c.abort(), 3000); const j = await (await fetch(`https://${domain}/osos-load`, {signal: c.signal, cache: "no-store"})).json(); return Number(j.participants ?? j.endpoints ?? 0) || 0; } catch { return 0; }
+}
+async function meetToken(gid){
+  const url = ((S.site || {}).pushUrl || "").replace(/\/+$/, ""); if (!url) throw new Error("no service");
+  const r = await fetch(url + "/meet-token", {method: "POST", headers: {"content-type": "application/json", authorization: "Bearer " + await S.authUser.getIdToken()}, body: JSON.stringify({gid})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error || "token"); e.code = j.error; throw e; }
+  return j;
+}
+function recordJoin(g){
+  if (S.role !== "student") return;
+  const date = today(), id = `${g.id}_${date}_${S.myNum}`;
+  if (S._joined && S._joined[id]) return;
+  S._joined = {...(S._joined || {}), [id]: 1};
+  setDoc(ref("joins/" + id), {groupId: g.id, date, num: S.myNum, time: nowHM(), at: new Date().toISOString()}).catch(() => {});
+}
+/* opening Teams after a check needs a fresh tap (browsers block pop-ups that follow a wait) */
+function teamsPrompt(g, why){
+  if (!validLink(g.meetLink)) return toast((why ? why + ". " : "") + "وما فيه رابط Teams للمقرر، تواصل مع المدرب");
+  const w = document.createElement("div"); w.className = "roomAsk";
+  w.innerHTML = `<div class="card" style="max-width:420px;margin:0"><h2>المحاضرة على Teams</h2><p>${why ? esc(why) + "، فالمحاضرة على Teams." : "المحاضرة على Teams."}</p><div class="row"><a class="btn pri" style="text-decoration:none" href="${esc(g.meetLink.trim())}" target="_blank" rel="noopener" id="raGo">افتح Teams</a><button class="btn" id="raNo">إغلاق</button></div></div>`;
+  document.body.appendChild(w);
+  w.querySelector("#raGo").onclick = () => setTimeout(() => w.remove(), 300);
+  w.querySelector("#raNo").onclick = () => w.remove();
+}
+const setLive = (g, mode) => setDoc(ref("live/" + g.id), {gid: g.id, on: true, mode, at: new Date().toISOString(), by: S.me || S.adminRole || "", course: g.course || ""})
+  .then(() => { notify("live", g.id); logAction(mode === "osos" ? "بدء محاضرة في القاعة" : "بدء محاضرة على Teams", g.course); return true; })
+  .catch(e => { handleWriteErr(e); return false; });
+/* trainer (or administration) starts the lecture; falls back to Teams when the room is down, overloaded or switched off */
+async function startLecture(g, btn){
+  const d = MEET(), site = S.site || {};
+  if (btn) btn.disabled = true;
+  try {
+    if (!d || site.meetForceTeams) { await setLive(g, "teams"); return teamsPrompt(g, d ? "قاعة المعهد موقفة مؤقتاً من الإدارة" : ""); }
+    let why = "", tok = null;
+    try { await loadJitsi(d); } catch { why = "قاعة المعهد ما تستجيب الحين"; }
+    if (!why && await meetLoad(d) >= (Number(site.meetMax) || 180)) why = "قاعة المعهد عليها ضغط الحين";
+    if (!why) { try { tok = await meetToken(g.id); } catch (e) { console.error(e); why = "تعذّر فتح قاعة المعهد"; } }
+    if (why) { await setLive(g, "teams"); return teamsPrompt(g, why); }
+    if (await setLive(g, "osos")) openRoom(g, tok);
+  } finally { if (btn) btn.disabled = false; }
+}
+/* a student (or an observer) joins whatever is running */
+async function joinLecture(g, btn){
+  const d = MEET();
+  if (!d) { if (!validLink(g.meetLink)) return toast("رابط المحاضرة غير صالح، تواصل مع المدرب"); window.open(g.meetLink.trim(), "_blank", "noopener"); recordJoin(g); return toast("انسجل دخولك للمحاضرة"); }
+  if (btn) btn.disabled = true;
+  try {
+    let l = null; try { const x = await getDoc(ref("live/" + g.id)); l = x.exists() ? x.data() : null; } catch {}
+    if (!liveOn(l)) return toast("المحاضرة ما بدأت للحين. أول ما يبدأها المدرب يوصلك إشعار");
+    if (l.mode === "teams") { recordJoin(g); return teamsPrompt(g); }
+    try { await loadJitsi(d); } catch { recordJoin(g); return teamsPrompt(g, "قاعة المعهد ما تستجيب الحين"); }
+    let tok; try { tok = await meetToken(g.id); } catch (e) { return toast(e.code === "not live" ? "المحاضرة ما بدأت للحين" : "تعذّر الدخول للقاعة، حاول مرة ثانية"); }
+    recordJoin(g); openRoom(g, tok);
+  } finally { if (btn) btn.disabled = false; }
+}
+function openRoom(g, tok){
+  closeRoom();
+  const mod = !!tok.moderator, w = document.createElement("div"); w.id = "roomWrap";
+  w.innerHTML = `<div class="roomBar"><b class="grow">${esc(g.course || "المحاضرة")}</b>${mod ? `<button class="btn sm" id="rmTeams">نقل المحاضرة لـ Teams</button><button class="btn sm danger" id="rmEnd">إنهاء المحاضرة للكل</button>` : ""}<button class="btn sm" id="rmOut">خروج</button></div><div id="roomBox"></div>`;
+  document.body.appendChild(w); document.body.style.overflow = "hidden";
+  const api = new window.JitsiMeetExternalAPI(tok.domain, {
+    roomName: tok.room, jwt: tok.jwt, parentNode: w.querySelector("#roomBox"), width: "100%", height: "100%", lang: "ar",
+    userInfo: {displayName: tok.name},
+    configOverwrite: {prejoinConfig: {enabled: false}, startWithAudioMuted: !mod, startWithVideoMuted: !mod, disableDeepLinking: true, subject: g.course || "",
+      localRecording: {disable: !mod || !!tok.observer, notifyAllParticipants: true}},
+    interfaceConfigOverwrite: {MOBILE_APP_PROMO: false, SHOW_JITSI_WATERMARK: false}
+  });
+  S.room = {api, gid: g.id, mod};
+  // students cannot turn their camera on until the trainer allows it
+  if (mod && !tok.observer) api.addListener("videoConferenceJoined", () => { try { api.executeCommand("toggleModeration", true, "video"); } catch {} });
+  api.addListener("readyToClose", closeRoom);
+  // everyone in the room follows the lecture if it moves to Teams or ends
+  S.room.unsub = onSnapshot(ref("live/" + g.id), x => {
+    const l = x.exists() ? x.data() : null; if (!S.room || S.room.gid !== g.id) return;
+    if (l && l.on && l.mode === "teams" && !S.room.leaving) { closeRoom(); teamsPrompt(g, "انتقلت المحاضرة"); }
+    else if (l && !l.on && !mod) { closeRoom(); toast("انتهت المحاضرة"); }
+  }, () => {});
+  w.querySelector("#rmOut").onclick = closeRoom;
+  if (mod) {
+    w.querySelector("#rmTeams").onclick = async () => {
+      if (!validLink(g.meetLink)) return toast("حط رابط Teams للمقرر أول، من صفحة المقرر");
+      S.room.leaving = true;
+      try { await setDoc(ref("live/" + g.id), {gid: g.id, on: true, mode: "teams", at: new Date().toISOString(), by: S.me || S.adminRole || "", course: g.course || ""}); notify("live", g.id); logAction("نقل محاضرة لـ Teams", g.course); } catch (e) { handleWriteErr(e); }
+      closeRoom(); teamsPrompt(g, "");
+    };
+    w.querySelector("#rmEnd").onclick = async e => {
+      if (!e.target.dataset.sure) { e.target.dataset.sure = 1; e.target.textContent = "متأكد؟ تنتهي للكل"; return; }
+      S.room.leaving = true;
+      try { api.executeCommand("endConference"); } catch {}
+      await endLive(g);
+      setTimeout(closeRoom, 800);
+    };
+  }
+}
+const endLive = g => setDoc(ref("live/" + g.id), {gid: g.id, on: false, mode: "osos", at: new Date().toISOString(), by: S.me || S.adminRole || "", course: g.course || "", endedAt: new Date().toISOString()})
+  .then(() => logAction("إنهاء محاضرة", g.course)).catch(handleWriteErr);
+function closeRoom(){
+  const r = S.room; S.room = null;
+  if (r) { try { r.unsub && r.unsub(); } catch {} try { r.api.dispose(); } catch {} }
+  const w = $("#roomWrap"); if (w) w.remove(); document.body.style.overflow = "";
+}
+/* administration and academic affairs: every lecture running now, to watch, move or end */
+function liveTab(el){
+  if (!S._liveSub) S._liveSub = onSnapshot(collection(db, "live"), x => { S.lives = x.docs.map(d => d.data()); if (S.aTab === "live" && !busyEditing()) render(); }, () => {});
+  const list = (S.lives || []).filter(liveOn).sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  el.innerHTML = `<div class="card"><h2>المحاضرات الآن (${list.length})</h2><p class="muted" style="margin:0">تدخل كمشرف بالكاميرا والمايك مطفيين، وتقدر تنقل المحاضرة لـ Teams أو تنهيها. وداخل القاعة تقدر تكتم أو تطرد أي مشارك.</p></div>
+  <div class="list">${list.map(l => { const g = S.groups[l.gid] || {}; return `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:200px"><div class="t">${esc(g.course || l.course || l.gid)}</div><div class="muted">${esc(tName(g.trainerId || ""))} · بدأت ${esc(fmtTime(new Date(l.at).toTimeString().slice(0, 5)))} · ${l.mode === "teams" ? "على Teams" : "قاعة المعهد"}</div></div>
+    ${l.mode === "osos" ? `<button class="btn sm pri" data-lvw="${esc(l.gid)}">دخول كمشرف</button>` : validLink(g.meetLink) ? `<a class="btn sm" style="text-decoration:none" href="${esc(g.meetLink)}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
+    ${RO() ? "" : `${l.mode === "osos" ? `<button class="btn sm" data-lvt="${esc(l.gid)}">نقل لـ Teams</button>` : ""}<button class="btn sm danger" data-lve="${esc(l.gid)}">إنهاء</button>`}</div>`; }).join("") || `<div class="card empty">ما فيه محاضرات شغالة الحين.</div>`}</div>`;
+  el.querySelectorAll("[data-lvw]").forEach(b => b.onclick = async () => {
+    const g = S.groups[b.dataset.lvw]; if (!g) return; b.disabled = true;
+    try { await loadJitsi(MEET()); const tok = await meetToken(g.id); openRoom(g, tok); logAction("دخول محاضرة كمشرف", g.course); }
+    catch (e) { console.error(e); toast("تعذّر الدخول للقاعة"); } finally { b.disabled = false; }
+  });
+  el.querySelectorAll("[data-lvt]").forEach(b => b.onclick = async () => {
+    const g = S.groups[b.dataset.lvt]; if (!g) return; if (!validLink(g.meetLink)) return toast("المقرر ما له رابط Teams");
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; }
+    await setLive(g, "teams"); toast("انتقلت المحاضرة لـ Teams، والطلاب يتحولون تلقائياً");
+  });
+  el.querySelectorAll("[data-lve]").forEach(b => b.onclick = async () => {
+    const g = S.groups[b.dataset.lve]; if (!g) return;
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "متأكد؟"; return; }
+    await endLive(g); toast("انتهت المحاضرة، والطلاب يطلعون تلقائياً");
+  });
+}
 const pending = path => { const q = Q[path]; return !!(q && (q.busy || q.next)); };
 function handleWriteErr(e){
   console.error(e);
@@ -791,7 +937,7 @@ function renderStudent(app){
           ${c.rate === null ? "" : `<span class="bar" style="display:block;margin-top:6px;max-width:220px"><i style="width:${c.rate}%"></i></span>
           <div class="muted" style="margin-top:6px">الغياب: ${c.ab.a} (${c.ab.absPct}%) ${levelPill(c.ab)}${c.ab.remaining !== null ? ` · باقي لك ${c.ab.remaining} غياب قبل الحرمان` : ""}</div>`}
           ${(c.g.recordings || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${c.g.recordings.length})</summary><div class="list" style="margin-top:6px">${c.g.recordings.filter(r => validLink(r.url)).map(r => `<a class="item" style="padding:8px 10px;text-decoration:none;color:inherit" href="${esc(r.url)}" target="_blank" rel="noopener"><span class="grow">${dH(r.date)} · ${esc(r.title)}</span><span class="btn sm">مشاهدة</span></a>`).join("")}</div></details>` : ""}
-          ${c.g.meetLink ? `<div style="margin-top:10px"><button class="btn sm ${c.live ? "gold" : ""}" data-join="${esc(c.g.id)}">${c.live ? "الآن · " : ""}دخول المحاضرة ${meetLabel(c.g.meetLink)}</button>${c.live ? ` <span class="muted">${fmtTime(c.live.from)} – ${fmtTime(c.live.to)}</span>` : ""}</div>` : ""}
+          ${c.g.meetLink || MEET() ? `<div style="margin-top:10px"><button class="btn sm ${c.live ? "gold" : ""}" data-join="${esc(c.g.id)}">${c.live ? "الآن · " : ""}دخول المحاضرة${MEET() ? "" : " " + meetLabel(c.g.meetLink)}</button>${c.live ? ` <span class="muted">${fmtTime(c.live.from)} – ${fmtTime(c.live.to)}</span>` : ""}</div>` : ""}
         </div>
         <div style="text-align:center;min-width:92px">
           ${c.r ? `<div style="font-size:26px;font-weight:700;color:var(--green)">${c.r.mark}</div><span class="pill ${c.r.mark >= PASS ? "p" : "a"}">${letter(c.r.mark)}</span>` : `<span class="pill">لم تُعتمد بعد</span>`}
@@ -802,15 +948,7 @@ function renderStudent(app){
   ${(S.myCerts || []).length ? `<div class="card"><h2>شهاداتي</h2><div class="list">${S.myCerts.map(c => `<div class="item"><div class="grow"><div class="t">${esc(c.course)}</div><div class="muted">${c.kind === "course" ? `دورة${c.hours ? " · " + esc(c.hours) + " ساعة" : ""}` : `حضور ${c.attPct}%`} · ${esc(greg(c.date))}</div></div><button class="btn sm gold" data-cert="${esc(c.code)}">طباعة الشهادة</button></div>`).join("")}</div></div>` : ""}`;
   app.querySelectorAll("[data-cert]").forEach(b => b.onclick = () => { const c = S.myCerts.find(x => x.code === b.dataset.cert); if (c) printCerts([c]); });
   app.querySelector(".card").insertAdjacentHTML("afterend", studentTabs()); bindStudentTabs(app);
-  app.querySelectorAll("[data-join]").forEach(b => b.onclick = () => {
-    const g = S.groups[b.dataset.join]; if (!g || !validLink(g.meetLink)) return toast("رابط المحاضرة غير صالح، تواصل مع المدرب");
-    window.open(g.meetLink.trim(), "_blank", "noopener");
-    const date = today(), id = `${g.id}_${date}_${S.myNum}`;
-    if (S._joined && S._joined[id]) return;
-    S._joined = {...(S._joined || {}), [id]: 1};
-    setDoc(ref("joins/" + id), {groupId: g.id, date, num: S.myNum, time: nowHM(), at: new Date().toISOString()})
-      .then(() => toast("انسجل دخولك للمحاضرة")).catch(() => {});
-  });
+  app.querySelectorAll("[data-join]").forEach(b => b.onclick = () => { const g = S.groups[b.dataset.join]; if (g) joinLecture(g, b); });
 }
 
 function studentAtt(el){
@@ -1034,7 +1172,8 @@ function renderTrainer(app){
     <div class="row"><button class="btn sm" id="back">→ المقررات</button><span class="pill">${esc(g.mode || "—")}</span></div>
     <h2 style="margin-top:10px">${esc(g.course)}</h2>
     <div class="row" style="margin-bottom:10px">
-      <input type="url" id="mlink" class="grow" dir="ltr" placeholder="رابط اجتماع Teams للمقرر" value="${esc(g.meetLink || "")}">
+      ${MEET() ? `<button class="btn pri" id="startLec" style="width:100%;margin-bottom:8px">ابدأ المحاضرة في قاعة المعهد</button>` : ""}
+      <input type="url" id="mlink" class="grow" dir="ltr" placeholder="${MEET() ? "رابط Teams للمقرر (احتياط لو تعطلت القاعة)" : "رابط اجتماع Teams للمقرر"}" value="${esc(g.meetLink || "")}">
       <button class="btn sm" id="mlSave">حفظ الرابط</button>
       ${validLink(g.meetLink) ? `<a class="btn sm pri" href="${esc(g.meetLink.trim())}" target="_blank" rel="noopener">فتح Teams</a>` : ""}
     </div>
@@ -1089,6 +1228,7 @@ function renderTrainer(app){
     if (await saveRecs([...(g.recordings || []), r].sort((a, b) => b.date.localeCompare(a.date)))) toast("انضاف التسجيل، والطلاب يشوفونه الحين");
   };
   document.querySelectorAll("[data-rrec]").forEach(b => b.onclick = () => { const l = [...(g.recordings || [])]; l.splice(Number(b.dataset.rrec), 1); saveRecs(l); });
+  if ($("#startLec")) $("#startLec").onclick = e => startLecture(g, e.target);
   $("#mlSave").onclick = async () => {
     const v = $("#mlink").value.trim();
     if (v && !validLink(v)) return toast("الرابط لازم يبدأ بـ https://");
@@ -1563,14 +1703,14 @@ function renderAdmin(app){
   if (FIN()) {
     app.innerHTML = `<div id="ab"></div>`; adminFinance($("#ab")); return;
   }
-  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["areqs","طلبات الطلاب" + ((S.aReqs || []).some(r => r.status === "new") ? ` (${S.aReqs.filter(r => r.status === "new").length})` : "")],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["memos","المراسلات" + memoBadge()],["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
+  const tabs = [["dash","لوحة اليوم"],["kpi","المؤشرات"],["groups","المقررات والطلاب"],["students","الطلاب"],["msgs","الرسائل الجماعية"],["trainers","المدربين والرموز"],["grades","الدرجات"],["follow","المتابعة"],["excuses","الأعذار"],["areqs","طلبات الطلاب" + ((S.aReqs || []).some(r => r.status === "new") ? ` (${S.aReqs.filter(r => r.status === "new").length})` : "")],["evals","التقييمات"],["report","التقارير"],["courses","الدورات والشهادات"],["sign","طلبات التوقيع"],["memos","المراسلات" + memoBadge()],...(MEET() ? [["live","المحاضرات الآن"]] : []),["system","النظام"],...(SEES_FIN() ? [["finance","المالية" + ((S.fReqs || []).some(r => r.status === "fin_signed") ? ` (${(S.fReqs || []).filter(r => r.status === "fin_signed").length})` : "")]] : []),["archive","الأرشيف"],...(S.adminRole === "admin" ? [["logs","السجل"]] : [])];
   if (!tabs.some(([k]) => k === S.aTab)) S.aTab = "dash";
   const waiting = Object.values(S.grades).filter(x => x.status === "submitted").length;
   app.innerHTML = `${backupNag()}${absNag()}${S.sys && S.sys.maintenance ? `<div class="notice err">وضع الصيانة شغّال: الموقع مقفل على الكل ما عدا الإدارة. تطفيه من تبويب "النظام".</div>` : ""}<div class="card" style="padding:10px 12px"><div class="tabs" style="border:0;padding:0">${tabs.map(([k,v]) => `<button class="tab ${S.aTab===k?"on":""}" data-at="${k}">${v}${k === "grades" && waiting ? ` (${waiting})` : ""}${k === "follow" && S.allAtt && ["academic", "admin"].includes(S.adminRole) ? (n => n ? ` (${n})` : "")(absAlerts().alerts.filter(alertWaiting).length) : ""}${k === "excuses" && (S.excuses || []).filter(x => x.status === "pending").length ? ` (${S.excuses.filter(x => x.status === "pending").length})` : ""}</button>`).join("")}</div></div><div id="ab"></div>`;
   app.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { S.aTab = b.dataset.at; render(); });
   if ($("#nagAbs")) $("#nagAbs").onclick = () => { S.aTab = "follow"; render(); };
   if ($("#nagBk")) $("#nagBk").onclick = async e => { e.target.disabled = true; try { await backupAll(); toast("نزلت النسخة الاحتياطية"); render(); } catch (x) { console.error(x); toast("تعذّر أخذ النسخة"); e.target.disabled = false; } };
-  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, areqs: adminAcReqs, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, memos: memosTab, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
+  ({dash: adminDash, kpi: adminKpi, groups: adminGroups, students: adminStudents, msgs: adminMessages, trainers: adminTrainers, grades: adminGrades, follow: adminFollow, excuses: adminExcuses, areqs: adminAcReqs, evals: adminEvals, report: adminReport, courses: adminCourses, sign: signRequests, memos: memosTab, live: liveTab, system: adminSystem, archive: adminArchive, finance: adminFinance, logs: adminLogs})[S.aTab]($("#ab"));
 }
 
 function adminDash(el){
@@ -2286,6 +2426,12 @@ function adminSystem(el){
     <label class="f" for="vapK">مفتاح Web Push (من Firebase: إعدادات المشروع ← Cloud Messaging ← Web Push certificates)<input type="text" id="vapK" dir="ltr" value="${esc((S.site || {}).vapid || "")}" placeholder="BKx…"></label>
     <label class="f" for="pushU" style="margin-top:8px">رابط خدمة الإشعارات (Cloudflare)<input type="url" id="pushU" dir="ltr" value="${esc((S.site || {}).pushUrl || "")}" placeholder="https://osos-push.….workers.dev"></label>
     <div class="row" style="margin-top:8px"><button class="btn pri sm" id="vapSave">حفظ</button>${(S.site || {}).vapid ? `<button class="btn sm" id="pushTest">إرسال إشعار تجريبي لي</button>` : ""}</div></div>` : ""}
+  ${S.adminRole === "admin" ? `<div class="card"><h2>القاعة الافتراضية</h2>
+    <p class="muted" style="margin-top:0">محاضرات عن بُعد داخل البوابة على سيرفر المعهد. لو القاعة ما ردّت أو كان عليها ضغط، المحاضرة تنفتح على رابط Teams حق المقرر.</p>
+    <label class="f" for="mtD">عنوان القاعة<input type="text" id="mtD" dir="ltr" value="${esc((S.site || {}).meetDomain || "")}" placeholder="meet.osustl.com"></label>
+    <label class="f" for="mtM" style="margin-top:8px">أقصى عدد مشاركين بنفس الوقت قبل التحويل لـ Teams<input type="number" id="mtM" min="20" max="2000" value="${esc(String((S.site || {}).meetMax || 180))}"></label>
+    <label class="row" for="mtT" style="gap:8px;cursor:pointer;margin-top:8px"><input type="checkbox" id="mtT" ${(S.site || {}).meetForceTeams ? "checked" : ""}> كل المحاضرات على Teams (للطوارئ أو صيانة السيرفر)</label>
+    <div class="row" style="margin-top:8px"><button class="btn pri sm" id="mtSave">حفظ</button></div></div>` : ""}
   <div class="card"><h2>الشهادات والمالية</h2>
     <p class="muted" style="margin-top:0">إذا شغّلته، ما تطلع شهادة الحضور إلا للطالب اللي سدد رسومه كاملة. الطالب اللي ما انفتح له حساب في المالية ما تطلع له شهادة.</p>
     ${sys.certNeedsFee ? `<button class="btn sm" id="cfOff">إيقاف شرط السداد</button> <span class="pill p">شغّال</span>` : `<button class="btn pri sm" id="cfOn">اشتراط السداد لإصدار الشهادة</button>`}
@@ -2354,6 +2500,11 @@ function adminSystem(el){
   if ($("#cfOn")) $("#cfOn").onclick = () => saveSys({certNeedsFee: true}, "تشغيل شرط السداد للشهادات");
   if ($("#cfOff")) $("#cfOff").onclick = () => saveSys({certNeedsFee: false}, "إيقاف شرط السداد للشهادات");
   bindSigCards(el);
+  if ($("#mtSave")) $("#mtSave").onclick = () => {
+    const d = $("#mtD").value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (d && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d)) return toast("العنوان غير صحيح، مثال: meet.osustl.com");
+    saveSite({meetDomain: d, meetMax: Math.max(20, Math.round(Number($("#mtM").value) || 180)), meetForceTeams: $("#mtT").checked}, "إعدادات القاعة الافتراضية");
+  };
   if ($("#vapSave")) $("#vapSave").onclick = () => { const v = $("#vapK").value.trim(); if (v && !/^[A-Za-z0-9_-]{60,120}$/.test(v)) return toast("المفتاح غير صحيح، انسخه كامل"); const u = $("#pushU").value.trim().replace(/\/+$/, ""); if (u && !/^https:\/\/[\w.-]+(\/[\w./-]*)?$/.test(u)) return toast("الرابط غير صحيح، لازم يبدأ بـ https://"); saveSite({vapid: v, pushUrl: u, portalUrl: SITE()}, "إعدادات الإشعارات"); };
   if ($("#pushTest")) $("#pushTest").onclick = async () => { if (!pushOn()) { await enablePush(false); if (!pushOn()) return; } if (!(S.site || {}).pushUrl) return toast("حط رابط خدمة الإشعارات أول واحفظه"); try { const r = await notifyNow("test", "me"); toast(r && r.sent ? "انرسل، المفروض يوصلك خلال ثواني" : r ? "الخدمة شغّالة بس ما لقت جهاز مفعّل باسمك. فعّل الإشعارات من الزر فوق" : "ما قدرت أوصل لخدمة الإشعارات. تأكد من الرابط"); } catch { toast("ما قدرت أوصل لخدمة الإشعارات. تأكد من الرابط"); } };
   $("#siteSave").onclick = async () => {
@@ -3208,7 +3359,7 @@ async function setDisabled(coll, id, on, name){
 }
 
 /* ---------- backup ---------- */
-const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles", "waivers", "acReqs", "memos"];
+const ALL_COLLS = ["public", "ann", "trainers", "groups", "students", "secrets", "studentSecrets", "att", "grades", "results", "joins", "excuses", "warnings", "evals", "certs", "idcards", "archives", "logs", "surveys", "fin", "finAccounts", "payments", "salaryPays", "expenses", "commPays", "finClear", "receipts", "courses", "finReqs", "sigs", "signReqs", "signFiles", "waivers", "acReqs", "memos", "live"];
 const NO_RESTORE = ["logs"];
 const APPEND_ONLY = ["payments", "expenses", "commPays"];   // money records are never deleted or rewritten: a restore only brings back missing ones
 const canon = v => JSON.stringify(v, (k, x) => x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x);   // the audit log is append-only; a restore never rewrites it
@@ -3848,8 +3999,8 @@ function finLate(el){
   const soon = all.filter(r => r.st.status === "ok" && r.st.next && r.st.next.due <= in3).sort((a, b) => a.st.next.due.localeCompare(b.st.next.due));
   const phoneOf = r => (r.acc && r.acc.phone) || (S.stPhones || {})[r.s.num] || "";
   const last = r => r.acc && r.acc.remindedAt ? `<span class="pill ${daysAgo(r.acc.remindedAt) < 7 ? "p" : ""}">ذُكّر ${daysAgo(r.acc.remindedAt) === 0 ? "اليوم" : `قبل ${daysAgo(r.acc.remindedAt)} يوم`}</span>` : `<span class="pill">ما ذُكّر</span>`;
-  const wa = (r, text) => phoneOf(r) ? `<a class="btn sm gold" target="_blank" rel="noopener" data-rem="${esc(r.s.num)}" href="https://wa.me/${normPhone(phoneOf(r))}?text=${encodeURIComponent(text)}">تذكير واتساب</a>` : `<span class="pill">بدون جوال</span>`;
-  const item = (r, info, text) => `<div class="item"><div class="grow"><div class="t">${esc(r.s.name)} <span class="muted">${esc(r.s.num)}</span></div><div class="muted">${info}</div></div>${last(r)}${wa(r, text)}<button class="btn sm" data-fo="${esc(r.s.num)}">الحساب</button></div>`;
+  const wa = (r, text) => phoneOf(r) ? `<a class="btn sm gold" style="text-decoration:none" target="_blank" rel="noopener" data-rem="${esc(r.s.num)}" href="https://wa.me/${normPhone(phoneOf(r))}?text=${encodeURIComponent(text)}">تذكير واتساب</a>` : `<span class="pill">بدون جوال</span>`;
+  const item = (r, info, text) => `<div class="item" style="flex-wrap:wrap"><div class="grow" style="min-width:min(100%,240px)"><div class="t">${esc(r.s.name)} <span class="muted">${esc(r.s.num)}</span></div><div class="muted">${info}</div></div>${last(r)}${wa(r, text)}<button class="btn sm" data-fo="${esc(r.s.num)}">الحساب</button></div>`;
   el.innerHTML = `<div class="card"><h2>المتأخرين عن السداد (${rows.length})</h2><p class="muted" style="margin:0">المجموع المتأخر: <b>${SAR(rows.reduce((a, r) => a + r.st.overdue, 0))}</b>. زر الواتساب يفتح رسالة جاهزة باسم الطالب والمبلغ، ويتسجل تاريخ التذكير.</p></div>
   <div class="list">${rows.map(r => item(r, `متأخر ${SAR(r.st.overdue)} · متبقي ${SAR(r.st.remaining)}`, finReminder(r.s, r.st))).join("") || `<div class="card empty">ما فيه متأخرين.</div>`}</div>
   ${soon.length ? `<div class="card" style="margin-top:14px"><h2>أقساط تستحق خلال 3 أيام (${soon.length})</h2><p class="muted" style="margin:0">تذكير ودّي قبل الموعد.</p></div>
