@@ -23,7 +23,7 @@ cat > /opt/osos-rec/server.py <<'PY'
 import hmac, hashlib, json, base64, os, re, shutil, time, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 
 ROOT = "/var/osos-rec"
 SECRET = open("/etc/osos-rec/secret").read().strip().encode()
@@ -115,17 +115,23 @@ class H(BaseHTTPRequestHandler):
             # people in the classroom right now, read from the bridge's own metrics (for the automatic switch to Teams)
             n, used = 0, None
             try:
-                txt = urlopen("http://127.0.0.1:8080/metrics", timeout=2).read().decode("utf-8", "replace")
+                req = Request("http://127.0.0.1:8080/metrics", headers={"Accept": "text/plain"})
+                txt = urlopen(req, timeout=2).read().decode("utf-8", "replace")
                 vals = {}
-                for line in txt.splitlines():
-                    if line.startswith("#") or " " not in line: continue
-                    k, v = line.rsplit(" ", 1); k = k.split("{")[0]
-                    try: vals[k] = vals.get(k, 0) + float(v)
-                    except ValueError: pass
-                for k in ("jitsi_jvb_local_endpoints", "jitsi_jvb_endpoints", "jitsi_jvb_current_endpoints", "jitsi_jvb_participants"):
+                if txt.lstrip().startswith("{"):      # some bridge versions answer in JSON
+                    for k, v in json.loads(txt).items():
+                        if isinstance(v, (int, float)): vals["jitsi_jvb_" + k if not k.startswith("jitsi_jvb_") else k] = float(v)
+                else:
+                    for line in txt.splitlines():
+                        if line.startswith("#") or " " not in line: continue
+                        k, v = line.rsplit(" ", 1); k = k.split("{")[0]
+                        try: vals[k] = vals.get(k, 0) + float(v)
+                        except ValueError: pass
+                for k in ("jitsi_jvb_current_endpoints", "jitsi_jvb_local_endpoints", "jitsi_jvb_endpoints", "jitsi_jvb_participants"):
                     if k in vals: n, used = int(vals[k]), k; break
-            except Exception:
-                pass
+                if used is None: used = "none: " + ",".join(sorted(x for x in vals if "endpoint" in x))[:200]
+            except Exception as e:
+                used = "error: " + str(e)[:120]
             return self.send(200, {"participants": n, "metric": used})
         if r == "/stats":
             if not self.t("stats"): return self.send(403, {"error": "ticket"})
