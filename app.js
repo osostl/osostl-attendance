@@ -1451,7 +1451,7 @@ function renderTrainer(app){
     </div>
     <details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer">تسجيلات المحاضرات (${(g.recordings || []).length})</summary>
       <div class="list" style="margin-top:8px">${(g.recordings || []).map((r, i) => `<div class="item" style="padding:8px 10px"><span class="grow">${dH(r.date)} · ${esc(r.title)}${r.rid ? ` <span class="muted">· ${esc(fmtSize(r.size))}</span>` : ""}</span>${r.rid ? `<button class="btn sm" data-rplay="${i}">تشغيل</button>` : `<a class="btn sm" href="${esc(validLink(r.url) ? r.url : "#")}" target="_blank" rel="noopener">فتح</a>`}<button class="btn sm danger" data-rrec="${i}">حذف</button></div>`).join("") || `<span class="muted">ما فيه تسجيلات</span>`}</div>
-      ${MEET() && (S.site || {}).pushUrl ? `<div class="notice" style="margin:8px 0 0">سجّل المحاضرة من قائمة القاعة (⋯ ← تسجيل)، والملف ينحفظ على جهازك. بعدها ارفعه هنا ويظهر لطلاب المقرر بس.</div>
+      ${MEET() && (S.site || {}).pushUrl ? `<div class="notice" style="margin:8px 0 0">أول ما تبدأ المحاضرة يطلب منك تبدأ التسجيل، ولما تنهيها يطلب منك ترفعه. والملف ينحفظ في «التنزيلات» بجهازك. وإذا فاتك الرفع، ارفعه من هنا ويظهر لطلاب المقرر بس.</div>
       <div class="row" style="margin-top:8px">
         <input type="date" id="rfD" value="${today()}" style="width:150px">
         <input type="text" id="rfT" class="grow" placeholder="عنوان المحاضرة">

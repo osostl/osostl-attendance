@@ -226,6 +226,11 @@ s = open(p).read()
 if "8080/colibri/stats" in s:
     s = s.replace("proxy_pass http://127.0.0.1:8080/colibri/stats;", "proxy_pass http://127.0.0.1:8090/load;")
     open(p, 'w').write(s); print("load counter moved to the bridge metrics")
+s = open(p).read()
+# the load service sends its own CORS header; a second one from nginx makes browsers refuse the answer
+if "8090/load;" in s and "proxy_hide_header Access-Control-Allow-Origin" not in s:
+    s = s.replace("proxy_pass http://127.0.0.1:8090/load;", "proxy_pass http://127.0.0.1:8090/load;\n        proxy_hide_header Access-Control-Allow-Origin;")
+    open(p, 'w').write(s); print("load counter: duplicate CORS header fixed")
 PY
 nginx -t
 systemctl reload nginx
@@ -236,6 +241,7 @@ printf "%-12s %s\n" "osos-rec" "$(systemctl is-active osos-rec)"
 printf "%-12s %s\n" "nginx" "$(systemctl is-active nginx)"
 echo "Ticket check (403 is correct here): $(curl -s -o /dev/null -w '%{http_code}' https://$DOMAIN/rec/stats)"
 echo "Load counter: $(curl -s -m 3 https://$DOMAIN/osos-load)"
+echo "CORS headers (must be exactly 1): $(curl -s -m 3 -D - -o /dev/null -H 'Origin: https://osustl.com' https://$DOMAIN/osos-load | grep -ci '^access-control-allow-origin')"
 df -h /var/osos-rec | tail -1
 echo
 echo "DONE. Recordings are stored in /var/osos-rec"
